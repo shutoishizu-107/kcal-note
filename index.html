@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#34c759">
+<title>カロリー収支ノート</title>
+<style>
+:root{--bg:#f2f2f7;--card:#fff;--tx:#1c1c1e;--sub:#6c6c70;--line:#e5e5ea;--pri:#248a3d;--pri-bg:#34c759;--over:#c2410c;--under:#0369a1;--ok:#15803d;--warn:#a16207}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.5 -apple-system,"Hiragino Sans",sans-serif;padding-bottom:calc(72px + env(safe-area-inset-bottom))}
+main{max-width:720px;margin:0 auto;padding:calc(12px + env(safe-area-inset-top)) 16px 12px}
+h2{font-size:1.2rem;font-weight:700;margin:.2rem 0 .6rem}
+h3{font-size:1rem;margin:.8rem 0 .4rem}
+.card{background:var(--card);border-radius:14px;padding:14px;margin-bottom:16px}
+label{display:block;font-size:.85rem;color:var(--sub);margin:8px 0 2px}
+input,select,textarea,button{font:inherit;font-size:16px}
+input,select,textarea{width:100%;padding:10px 12px;border:0;border-radius:10px;background:#f2f2f7;color:var(--tx)}
+input:focus,select:focus{outline:2px solid var(--pri-bg)}
+.row{display:flex;gap:8px}.row>*{flex:1;min-width:0}
+button{border:0;background:#e8f7ec;border-radius:10px;padding:10px 14px;color:var(--pri);font-weight:600;cursor:pointer}
+button:active{opacity:.6}
+button.pri{background:var(--pri-bg);color:#fff}
+button.danger{color:#b91c1c}
+button.sm{padding:4px 8px;font-size:.85rem}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:rgba(249,249,249,.88);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-top:.5px solid #c6c6c8;padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;border-radius:0;padding:12px 2px;font-size:.78rem;font-weight:500;background:transparent;color:var(--sub)}
+nav button.on{color:var(--pri);font-weight:700}
+.datebar{display:flex;gap:6px;align-items:center;margin-bottom:10px}.datebar input{flex:1}
+.badge{display:inline-block;padding:3px 10px;border-radius:99px;font-weight:700;font-size:.95rem;border:2px solid currentColor}
+.over{color:var(--over)}.under{color:var(--under)}.maintain{color:var(--ok)}.prov,.unrec,.insuf{color:var(--warn)}
+.big{font-size:2rem;font-weight:700;line-height:1.2}
+table{width:100%;border-collapse:collapse}
+td,th{padding:6px 4px;border-bottom:1px solid var(--line);text-align:left;font-size:.92rem;vertical-align:top}
+td.n,th.n{text-align:right;white-space:nowrap}
+tr.sum td{font-weight:700}
+.small{font-size:.8rem;color:var(--sub)}
+.note{background:#fff8e6;border-radius:10px;padding:8px;font-size:.85rem;margin:8px 0}
+.err{background:#fee2e2;border-color:#fca5a5}
+.item{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
+.item .acts{display:flex;gap:4px;flex-shrink:0;align-items:flex-start}
+.chart{display:flex;gap:4px}
+.col{flex:1;text-align:center;font-size:.72rem;min-width:0}
+.bars{position:relative;height:150px;border-bottom:0}
+.bars::after{content:"";position:absolute;left:0;right:0;top:50%;border-top:1px solid var(--sub)}
+.bar{position:absolute;left:18%;right:18%;border-radius:3px}
+.bar.over{background:var(--over)}.bar.under{background:var(--under)}.bar.maintain{background:var(--ok);height:3px!important}
+.bar.prov{background:repeating-linear-gradient(45deg,#fff 0 3px,currentColor 3px 5px);border:1.5px dashed currentColor;background-color:#fff}
+.mark{position:absolute;left:0;right:0;top:calc(50% - 10px);color:var(--warn);font-size:.7rem}
+.col b{display:block;font-size:.8rem}
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(80px + env(safe-area-inset-bottom));background:#1d2733;color:#fff;padding:8px 14px;border-radius:8px;display:none;z-index:9;max-width:90%}
+.opt{display:flex;gap:8px;align-items:flex-start;padding:8px;background:#f2f2f7;border-radius:10px;margin:6px 0;accent-color:var(--pri-bg)}
+.opt input{width:auto;margin-top:5px}
+.opt label{margin:0;color:var(--tx);font-size:.95rem}
+details{margin:6px 0}summary{cursor:pointer;font-weight:600}
+pre{white-space:pre-wrap;font-size:.8rem;background:#f1f5f9;padding:8px;border-radius:8px}
+.exrow{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:4px;margin:4px 0}
+.exrow input{padding:7px 4px}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<nav id="nav"></nav>
+<div id="toast" role="status"></div>
+
+<!-- ============ 計算モジュール（DOM・保存に依存しない純粋関数） ============ -->
+<script id="calc-js">
+const Calc = (() => {
+  // 日常活動係数: 筋トレ（記録するセッション）を「含まない」日常動作のみを想定
+  const ACTIVITY = [
+    {id:'sedentary', label:'ほぼ座位', pal:1.2, ex:'デスクワーク・在宅中心。移動は電車や車が主で、1日の歩行が少ない'},
+    {id:'light', label:'やや活動的', pal:1.3, ex:'事務職で通勤や買い物で歩く。1日の歩数 約5,000〜8,000歩'},
+    {id:'moderate', label:'活動的', pal:1.4, ex:'接客・営業・教職など立ち歩きが多い。1日の歩数 約8,000〜12,000歩'},
+    {id:'high', label:'とても活動的', pal:1.5, ex:'配達・介護・調理など、勤務中ほぼ動き続ける仕事（肉体労働は含まない）'}
+  ];
+  // MET: 2024 Adult Compendium of Physical Activities
+  const INTENSITY = [
+    {id:'light', label:'軽め', met:3.5, code:'02054', desc:'複数種目を8〜15回、中程度の重量でテンポよく'},
+    {id:'moderate', label:'ふつう', met:5.0, code:'02052', desc:'スクワット・デッドリフトなど大筋群中心、ゆっくり〜爆発的'},
+    {id:'vigorous', label:'きつい', met:6.0, code:'02050', desc:'パワーリフティング・ボディビルの高強度'}
+  ];
+  const MEALS = [{id:'breakfast',label:'朝'},{id:'lunch',label:'昼'},{id:'dinner',label:'夜'},{id:'snack',label:'間食'}];
+
+  const r1 = v => Math.round(v * 10) / 10;
+  function parseDate(s){ const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s||''); return m ? new Date(+m[1], +m[2]-1, +m[3]) : null; }
+  function fmtDate(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+  function today(){ return fmtDate(new Date()); }
+  function addDays(s, n){ const d = parseDate(s); d.setDate(d.getDate()+n); return fmtDate(d); }
+  function ageOn(birth, dateStr){
+    const b = parseDate(birth), d = parseDate(dateStr); if(!b||!d) return null;
+    let a = d.getFullYear()-b.getFullYear();
+    if (d.getMonth()<b.getMonth() || (d.getMonth()===b.getMonth() && d.getDate()<b.getDate())) a--;
+    return a;
+  }
+  // Mifflin-St Jeor (1990)
+  function bmr({weightKg, heightCm, age, sex}){
+    return 10*weightKg + 6.25*heightCm - 5*age + (sex==='male' ? 5 : -161);
+  }
+  // 基準量に対する割合でkcalを算出
+  function scaleKcal(baseKcal, baseAmount, amount){ return baseKcal * amount / baseAmount; }
+
+  // 筋トレ消費: 手入力があればそれを採用。なければ (MET-1)×体重×時間。種目単位では加算しない。
+  function workoutKcal(w, weightKg){
+    if (w.kcalOverride != null) return {kcal:w.kcalOverride, method:'manual'};
+    if (!weightKg || !w.durationMin || !w.metUsed) return {kcal:0, method:'none'};
+    return {kcal:(w.metUsed-1)*weightKg*(w.durationMin/60), method:'met'};
+  }
+  function missingFields(cond, date){
+    const m = [];
+    if (!cond) return ['身長','性別','生年月日','体重','日常活動レベル'];
+    if (!(cond.heightCm>0)) m.push('身長');
+    if (cond.sex!=='male' && cond.sex!=='female') m.push('性別');
+    const a = ageOn(cond.birthDate, date);
+    if (a==null || a<0 || a>120) m.push('生年月日');
+    if (!(cond.weightKg>0)) m.push('体重');
+    if (!ACTIVITY.some(x=>x.id===cond.activityId)) m.push('日常活動レベル');
+    return m;
+  }
+  function dayBalance(date, day, cond){
+    day = day || {meals:[], workouts:[], mealsComplete:false};
+    const meals = day.meals||[], workouts = day.workouts||[];
+    const intake = meals.reduce((s,m)=>s+m.kcal,0);
+    const missing = missingFields(cond, date);
+    const out = {intake, mealCount:meals.length, missing, status:'', diff:null, bmr:null, daily:null, exercise:null, total:null, tol:cond?cond.tol:null};
+    if (missing.length){ out.status='insufficient'; return out; }
+    const b = bmr({weightKg:cond.weightKg, heightCm:cond.heightCm, age:ageOn(cond.birthDate,date), sex:cond.sex});
+    const pal = ACTIVITY.find(x=>x.id===cond.activityId).pal;
+    out.pal = pal; out.bmr = b; out.daily = b*pal;
+    out.exercise = workouts.reduce((s,w)=>s+workoutKcal(w,cond.weightKg).kcal,0);
+    out.total = out.daily + out.exercise;
+    out.diff = intake - out.total;
+    if (!day.mealsComplete) out.status = meals.length ? 'provisional' : 'unrecorded';
+    else out.status = Math.abs(out.diff) <= cond.tol ? 'maintain' : (out.diff>0 ? 'over' : 'under');
+    return out;
+  }
+
+  function selfTest(){
+    const res = [], eq = (n,a,b)=>res.push({name:n, ok:Math.abs(a-b)<1e-6, detail:`期待 ${b} / 結果 ${a}`}), is=(n,a,b)=>res.push({name:n, ok:a===b, detail:`期待 ${b} / 結果 ${a}`});
+    eq('ごはん156kcal/100g × 150g = 234kcal', scaleKcal(156,100,150), 234);
+    eq('1食500kcal × 倍率0.5 = 250kcal', scaleKcal(500,1,0.5), 250);
+    eq('卵 71kcal/個 × 2個 = 142kcal', scaleKcal(71,1,2), 142);
+    eq('Mifflin 男性30歳 70kg 175cm = 1648.75', bmr({weightKg:70,heightCm:175,age:30,sex:'male'}), 1648.75);
+    eq('Mifflin 女性30歳 55kg 160cm = 1264', bmr({weightKg:55,heightCm:160,age:30,sex:'female'}), 1264);
+    eq('筋トレ MET5.0 60分 70kg = (5-1)×70×1 = 280kcal', workoutKcal({durationMin:60,metUsed:5},70).kcal, 280);
+    eq('手入力の消費kcalが優先される', workoutKcal({durationMin:60,metUsed:5,kcalOverride:300},70).kcal, 300);
+    is('誕生日前は年齢-1', ageOn('1990-12-31','2026-10-16'), 35);
+    const cond = {heightCm:175, sex:'male', birthDate:'1996-01-01', weightKg:70, activityId:'sedentary', tol:100};
+    const ex = [{name:'A',weightKg:60,reps:10,sets:3},{name:'B',weightKg:40,reps:10,sets:3},{name:'C',weightKg:20,reps:10,sets:3}];
+    const wk = {durationMin:60, metUsed:5, exercises:ex, kcalOverride:null};
+    const base = {mealsComplete:true, meals:[{kcal:2500}], workouts:[wk]};
+    const b = dayBalance('2026-01-01', base, cond);
+    eq('総消費=BMR×1.2+筋トレ280（種目数に依存しない）', b.total, 1648.75*1.2+280);
+    eq('筋トレ追加は280のみ（二重計上なし）', b.exercise, 280);
+    eq('差分=摂取2500-総消費2258.5=+241.5', b.diff, 241.5);
+    is('差分>許容幅 → over', b.status, 'over');
+    is('摂取1800 → under', dayBalance('2026-01-01',{mealsComplete:true,meals:[{kcal:1800}],workouts:[]},cond).status, 'under');
+    is('差分が許容幅内 → maintain', dayBalance('2026-01-01',{mealsComplete:true,meals:[{kcal:1978}],workouts:[]},cond).status, 'maintain');
+    is('未完了+記録あり → provisional', dayBalance('2026-01-01',{mealsComplete:false,meals:[{kcal:500}],workouts:[]},cond).status, 'provisional');
+    is('未完了+記録なし → unrecorded（0kcalと断定しない）', dayBalance('2026-01-01',{mealsComplete:false,meals:[],workouts:[]},cond).status, 'unrecorded');
+    is('完了+記録なし → 摂取0として判定(under)', dayBalance('2026-01-01',{mealsComplete:true,meals:[],workouts:[]},cond).status, 'under');
+    is('体重なし → insufficient', dayBalance('2026-01-01',base,{...cond,weightKg:null}).status, 'insufficient');
+    return res;
+  }
+  return {ACTIVITY, INTENSITY, MEALS, r1, parseDate, fmtDate, today, addDays, ageOn, bmr, scaleKcal, workoutKcal, missingFields, dayBalance, selfTest};
+})();
+</script>
+
+<!-- ============ データ保存モジュール ============ -->
+<script id="store-js">
+const Store = (() => {
+  const KEY = 'kcal-tracker-v1';
+  const SCHEMA = 1;
+  const defaults = () => ({schemaVersion:SCHEMA, settings:{heightCm:null, sex:'', birthDate:'', activityId:'', tolerance:100}, weights:{}, foods:[], days:{}});
+  let data = defaults();
+  let memoryOnly = false;
+
+  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+  const isNum = (v, min=0, max=Infinity) => typeof v==='number' && isFinite(v) && v>=min && v<=max;
+  const isDate = s => typeof s==='string' && !!Calc.parseDate(s) && Calc.fmtDate(Calc.parseDate(s))===s;
+  const str = (v, max=200) => typeof v==='string' ? v.slice(0,max) : '';
+
+  // 形式検証と正規化。不正なら例外
+  function validate(o){
+    const bad = m => { throw new Error(m); };
+    if (!o || typeof o!=='object' || Array.isArray(o)) bad('JSONの形式が不正です');
+    if (o.schemaVersion !== SCHEMA) bad('対応していないバージョンです（schemaVersion='+o.schemaVersion+'）');
+    const d = defaults();
+    const s = o.settings||{};
+    if (s.heightCm!=null && !isNum(s.heightCm,50,250)) bad('身長が不正です');
+    if (s.sex && s.sex!=='male' && s.sex!=='female') bad('性別が不正です');
+    if (s.birthDate && !isDate(s.birthDate)) bad('生年月日が不正です');
+    if (s.activityId && !Calc.ACTIVITY.some(a=>a.id===s.activityId)) bad('活動レベルが不正です');
+    if (s.tolerance!=null && !isNum(s.tolerance,0,2000)) bad('許容幅が不正です');
+    d.settings = {heightCm:s.heightCm??null, sex:s.sex||'', birthDate:s.birthDate||'', activityId:s.activityId||'', tolerance:s.tolerance??100};
+    for (const [k,v] of Object.entries(o.weights||{})) { if(!isDate(k)||!isNum(v,20,300)) bad('体重記録が不正です: '+k); d.weights[k]=v; }
+    d.foods = (o.foods||[]).map(f => validateFood(f, bad));
+    for (const [k,day] of Object.entries(o.days||{})) {
+      if (!isDate(k) || !day || typeof day!=='object') bad('日次データが不正です: '+k);
+      const nd = {mealsComplete:!!day.mealsComplete, meals:[], workouts:[], cond:null};
+      for (const m of day.meals||[]) {
+        if (!Calc.MEALS.some(x=>x.id===m.meal) || !isNum(m.kcal) || !isNum(m.amount) || !isNum(m.baseAmount,1e-9) || !isNum(m.baseKcal)) bad('食事記録が不正です: '+k);
+        nd.meals.push({id:str(m.id,40)||uid(), meal:m.meal, foodId:m.foodId?str(m.foodId,40):null, name:str(m.name), unit:str(m.unit,20), amount:m.amount, baseAmount:m.baseAmount, baseKcal:m.baseKcal, kcal:m.kcal, note:str(m.note,500)});
+      }
+      for (const w of day.workouts||[]) {
+        if (!isNum(w.durationMin,0,1440) || !isNum(w.metUsed,1,30) || (w.kcalOverride!=null && !isNum(w.kcalOverride,0,20000))) bad('筋トレ記録が不正です: '+k);
+        const exs = (w.exercises||[]).map(e => { if(!isNum(e.weightKg,0,1000)||!isNum(e.reps,0,1000)||!isNum(e.sets,0,1000)) bad('種目が不正です: '+k); return {name:str(e.name), weightKg:e.weightKg, reps:e.reps, sets:e.sets}; });
+        nd.workouts.push({id:str(w.id,40)||uid(), source:str(w.source,40)||'manual', externalId:w.externalId?str(w.externalId,100):null, importedAt:w.importedAt?str(w.importedAt,40):null,
+          title:str(w.title), durationMin:w.durationMin, intensity:str(w.intensity,20), metUsed:w.metUsed, kcalOverride:w.kcalOverride??null, exercises:exs, note:str(w.note,500)});
+      }
+      if (day.cond) {
+        const c = day.cond;
+        if (!isNum(c.heightCm,50,250)||!isNum(c.weightKg,20,300)||!isDate(c.birthDate)||(c.sex!=='male'&&c.sex!=='female')||!Calc.ACTIVITY.some(a=>a.id===c.activityId)||!isNum(c.tol,0,2000)) bad('保存済み計算条件が不正です: '+k);
+        nd.cond = {heightCm:c.heightCm, sex:c.sex, birthDate:c.birthDate, weightKg:c.weightKg, activityId:c.activityId, tol:c.tol};
+      }
+      d.days[k] = nd;
+    }
+    return d;
+  }
+  function validateFood(f, bad){
+    if (!f || typeof f.name!=='string' || !f.name.trim() || !isNum(f.baseAmount,1e-9,100000) || !isNum(f.kcal,0,100000)) bad('マスタ項目が不正です');
+    return {id:str(f.id,40)||uid(), name:str(f.name,100).trim(), baseAmount:f.baseAmount, unit:str(f.unit,20), kcal:f.kcal, note:str(f.note,500)};
+  }
+
+  function load(){
+    try { const raw = localStorage.getItem(KEY); if (raw) data = validate(JSON.parse(raw)); }
+    catch(e){ console.error(e); memoryOnly = !!(e && e.name==='SecurityError'); if(!memoryOnly) { try{ localStorage.setItem(KEY+'-corrupt', localStorage.getItem(KEY)); }catch(_){} } data = defaults(); }
+  }
+  function save(){ try { localStorage.setItem(KEY, JSON.stringify(data)); return true; } catch(e){ memoryOnly = true; return false; } }
+
+  function getDay(date){ return data.days[date] || {mealsComplete:false, meals:[], workouts:[], cond:null}; }
+  function mutDay(date){ return data.days[date] || (data.days[date] = {mealsComplete:false, meals:[], workouts:[], cond:null}); }
+  function weightFor(date){
+    if (data.weights[date]!=null) return {kg:data.weights[date], date};
+    const prev = Object.keys(data.weights).filter(k=>k<date).sort().pop();
+    return prev ? {kg:data.weights[prev], date:prev} : null;
+  }
+  function liveCond(date){
+    const s = data.settings, w = weightFor(date);
+    return {heightCm:s.heightCm, sex:s.sex, birthDate:s.birthDate, weightKg:w?w.kg:null, activityId:s.activityId, tol:s.tolerance, weightDate:w?w.date:null};
+  }
+  // 計算条件が揃っていれば、その日に保存して以後の設定変更の影響を受けないようにする
+  function lockCond(date){
+    const day = mutDay(date);
+    if (day.cond) return;
+    const c = liveCond(date);
+    if (!Calc.missingFields(c,date).length) { delete c.weightDate; day.cond = c; }
+  }
+  function condFor(date){ const d = data.days[date]; return {cond:(d&&d.cond)||liveCond(date), locked:!!(d&&d.cond)}; }
+  function refreshCond(date){ const day = mutDay(date); day.cond = null; lockCond(date); }
+
+  // Hevy等の外部取込用: source+externalId で重複判定して追加/スキップ
+  function findWorkout(source, externalId){
+    if (!externalId) return null;
+    for (const [date,d] of Object.entries(data.days)) { const w = d.workouts.find(x=>x.source===source && x.externalId===externalId); if (w) return {date, workout:w}; }
+    return null;
+  }
+  function importWorkouts(date, list){
+    let added = 0, skipped = 0;
+    for (const w of list) {
+      if (findWorkout(w.source, w.externalId)) { skipped++; continue; }
+      lockCond(date); mutDay(date).workouts.push({...w, id:uid(), importedAt:new Date().toISOString()}); added++;
+    }
+    save(); return {added, skipped};
+  }
+
+  return {
+    get data(){ return data; }, get memoryOnly(){ return memoryOnly; },
+    load, save, uid, validate, validateFood, defaults, getDay, mutDay, weightFor, liveCond, lockCond, condFor, refreshCond, findWorkout, importWorkouts,
+    replaceAll(o){ data = validate(o); save(); },
+    exportAll(){ return JSON.stringify(data, null, 2); }
+  };
+})();
+</script>
+
+<!-- ============ 画面モジュール ============ -->
+<script id="view-js">
+const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = v => { if (v===''||v==null) return null; const n = Number(String(v).replace(',','.')); return isFinite(n) ? n : null; };
+const fmt = (v, d=0) => v==null ? '—' : Number(v).toLocaleString('ja-JP', {maximumFractionDigits:d, minimumFractionDigits:0});
+const sgn = v => (v>0?'+':v<0?'−':'±') + fmt(Math.abs(v));
+const WD = ['日','月','火','水','木','金','土'];
+const dlabel = s => { const d = Calc.parseDate(s); return `${d.getMonth()+1}/${d.getDate()}(${WD[d.getDay()]})`; };
+
+const ui = {tab:'dash', date:Calc.today(), mform:null, wform:null, fform:null};
+const newMform = () => ({meal:'breakfast', foodId:'', mode:'amount', amount:'', manualName:'', manualKcal:'', note:'', editId:null});
+const newWform = () => ({editId:null, title:'', durationMin:'', intensity:'moderate', kcalOverride:'', note:'', exercises:[{name:'',weightKg:'',reps:'',sets:''}], source:'manual', externalId:null, importedAt:null});
+const newFform = () => ({editId:null, name:'', baseAmount:'', unit:'g', kcal:'', note:''});
+ui.mform = newMform(); ui.wform = newWform(); ui.fform = newFform();
+
+let toastT;
+function toast(m, err){ const t = document.getElementById('toast'); t.textContent = m; t.style.background = err?'#b91c1c':'#1d2733'; t.style.display='block'; clearTimeout(toastT); toastT=setTimeout(()=>t.style.display='none', 3200); }
+function persist(){ if(!Store.save()) toast('保存できません（プライベートブラウズ等）。バックアップを取ってください', true); }
+
+const STATUS = {
+  over:{t:'オーバー', c:'over'}, under:{t:'アンダー', c:'under'}, maintain:{t:'ほぼ維持', c:'maintain'},
+  provisional:{t:'暫定（食事記録が未完了）', c:'prov'}, unrecorded:{t:'未記録', c:'unrec'}, insufficient:{t:'判定に必要な情報が不足', c:'insuf'}
+};
+
+/* ---------- ダッシュボード ---------- */
+function viewDash(){
+  const d = ui.date, {cond, locked} = Store.condFor(d), b = Calc.dayBalance(d, Store.getDay(d), cond), st = STATUS[b.status];
+  let head;
+  if (b.status==='insufficient') head = `<div class="note err">判定に必要な情報が不足: ${esc(b.missing.join('、'))}。「設定」で入力してください。</div>`;
+  else if (b.status==='unrecorded') head = `<span class="badge ${st.c}">${st.t}</span><div class="small">食事が未記録の日は、摂取0kcalとして判定しません。</div>`;
+  else {
+    const label = b.status==='provisional' ? `暫定 ${b.diff>0?'オーバー':'アンダー'}傾向` : st.t;
+    head = `<span class="badge ${b.status==='provisional'?(b.diff>0?'over':'under'):st.c}">${label}</span>
+      <div class="big ${b.status==='provisional'?'prov':st.c}">${sgn(b.diff)} kcal</div>
+      <div class="small">差分 = 摂取 − 推定総消費（許容幅 ±${fmt(cond.tol)}kcal 以内なら「ほぼ維持」）${b.status==='provisional'?'<br>食事記録が未完了のため、これまでの記録分のみの暫定値です。':''}</div>`;
+  }
+  const rows = b.status==='insufficient' ? '' : `
+    <table>
+      <tr><td>推定基礎代謝 (BMR)</td><td class="n">${fmt(b.bmr)} kcal</td></tr>
+      <tr><td>日常活動を含む推定消費<div class="small">BMR × ${b.pal}（筋トレ除く）</div></td><td class="n">${fmt(b.daily)} kcal</td></tr>
+      <tr><td>筋トレによる追加消費<div class="small">安静分を除いた正味</div></td><td class="n">+${fmt(b.exercise)} kcal</td></tr>
+      <tr class="sum"><td>1日の推定総消費</td><td class="n">${fmt(b.total)} kcal</td></tr>
+      <tr class="sum"><td>摂取カロリー${Store.getDay(d).mealsComplete?'':'（記録中）'}</td><td class="n">${fmt(b.intake)} kcal</td></tr>
+    </table>`;
+  const cinfo = b.status==='insufficient' ? '' : `<div class="small">計算条件: 体重 ${fmt(cond.weightKg,1)}kg・${esc(Calc.ACTIVITY.find(a=>a.id===cond.activityId).label)}・${locked?'この日に保存済みの条件':'現在の設定（記録すると保存されます）'}</div>`;
+  return `${dateBar()}
+    <div class="card"><h2>${esc(d)} の収支</h2>${head}${rows}${cinfo}
+      <div class="note">消費カロリーと収支は推定値であり、実測値ではありません。</div></div>
+    <div class="card"><h2>直近7日間（差分）</h2>${chart()}
+      <div class="small">棒は差分（上=オーバー、下=アンダー）。破線枠は暫定、「未記録」は食事記録なし、「0」は完了済みで摂取0kcal。</div></div>`;
+}
+function chart(){
+  const days = []; for (let i=6;i>=0;i--) days.push(Calc.addDays(ui.date,-i));
+  const bs = days.map(x => { const {cond}=Store.condFor(x); return Calc.dayBalance(x, Store.getDay(x), cond); });
+  const max = Math.max(300, ...bs.map(b=>b.diff==null?0:Math.abs(b.diff)));
+  return '<div class="chart">' + bs.map((b,i) => {
+    const st = STATUS[b.status]; let bar='', txt;
+    if (b.diff!=null && b.status!=='unrecorded') {
+      const h = Math.max(2, Math.abs(b.diff)/max*50), up = b.diff>0, cls = b.status==='provisional' ? 'prov '+(up?'over':'under') : b.status;
+      bar = `<div class="bar ${cls}" style="${up?'bottom':'top'}:50%;height:${h}%;${b.status==='provisional'?'color:'+(up?'var(--over)':'var(--under)'):''}"></div>`;
+    }
+    if (b.status==='unrecorded' || b.status==='insufficient') bar = `<div class="mark">${b.status==='unrecorded'?'未記録':'情報不足'}</div>`;
+    txt = b.status==='insufficient' ? '—' : b.status==='unrecorded' ? '—' : sgn(b.diff);
+    const short = {over:'オーバー',under:'アンダー',maintain:'維持',provisional:'暫定',unrecorded:'未記録',insufficient:'不足'}[b.status];
+    const intake = (b.status==='unrecorded'||b.status==='insufficient') && !b.mealCount ? '摂取 —' : '摂取 '+fmt(b.intake);
+    return `<div class="col"><div class="bars">${bar}</div><b class="${st.c}">${txt}</b><span class="${st.c}">${short}</span><br>${dlabel(days[i])}<br><span class="small">${intake}</span></div>`;
+  }).join('') + '</div>';
+}
+function dateBar(){
+  return `<div class="datebar"><button data-act="date-prev" aria-label="前日">◀</button><input type="date" data-f="date" value="${esc(ui.date)}"><button data-act="date-next" aria-label="翌日">▶</button><button data-act="today">今日</button></div>`;
+}
+
+/* ---------- 日次記録 ---------- */
+function viewDaily(){
+  const d = ui.date, day = Store.getDay(d), {cond} = Store.condFor(d), b = Calc.dayBalance(d, day, cond), w = Store.weightFor(d);
+  const mf = ui.mform, foods = Store.data.foods, food = foods.find(f=>f.id===mf.foodId);
+  const byMeal = Calc.MEALS.map(m => {
+    const items = day.meals.filter(x=>x.meal===m.id), sum = items.reduce((s,x)=>s+x.kcal,0);
+    return `<h3>${m.label}　<span class="small">${fmt(sum)} kcal</span></h3>` + (items.length ? items.map(x=>`
+      <div class="item"><div>${esc(x.name)}${x.foodId?` <span class="small">${fmt(x.amount,2)}${esc(x.unit)}</span>`:''}<br><span class="small">${fmt(x.kcal)} kcal${x.note?' ・ '+esc(x.note):''}</span></div>
+      <div class="acts">${Store.data.foods.some(f=>f.id===x.foodId)?'':`<button class="sm" data-act="meal-to-master" data-id="${x.id}">マスタ登録</button>`}<button class="sm" data-act="meal-edit" data-id="${x.id}">編集</button><button class="sm danger" data-act="meal-del" data-id="${x.id}">削除</button></div></div>`).join('') : '<div class="small">記録なし</div>');
+  }).join('');
+
+  const wf = ui.wform;
+  const wl = day.workouts.map(x => {
+    const k = Calc.workoutKcal(x, cond.weightKg), it = Calc.INTENSITY.find(i=>i.id===x.intensity);
+    return `<div class="item"><div><b>${esc(x.title||'(名称なし)')}</b> <span class="small">${fmt(x.durationMin)}分・${esc(it?it.label:'')}・MET ${x.metUsed}</span><br>
+      <span class="small">${x.exercises.map(e=>`${esc(e.name)} ${e.weightKg}kg×${e.reps}回×${e.sets}set`).join(' / ')}</span><br>
+      <span class="small">消費 ${cond.weightKg||k.method==='manual'?fmt(k.kcal)+' kcal（'+(k.method==='manual'?'手入力':'推定')+'）':'体重未入力のため算出不可'}${x.source!=='manual'?' ・取込元:'+esc(x.source):''}${x.note?' ・ '+esc(x.note):''}</span></div>
+      <div class="acts"><button class="sm" data-act="w-edit" data-id="${x.id}">編集</button><button class="sm danger" data-act="w-del" data-id="${x.id}">削除</button></div></div>`;
+  }).join('') || '<div class="small">筋トレなし</div>';
+  const it = Calc.INTENSITY.find(i=>i.id===wf.intensity);
+
+  return `${dateBar()}
+  <div class="card"><h2>体重・食事記録の状態</h2>
+    <label>この日の体重 (kg)${w&&w.date!==d?`（未入力のため ${esc(w.date)} の値を使用）`:''}</label>
+    <div class="row"><input type="number" inputmode="decimal" step="0.1" id="wt" value="${Store.data.weights[d]??''}" placeholder="${w?fmt(w.kg,1):'例: 体重を入力'}"><button data-act="save-weight">体重を保存</button></div>
+    <div class="opt"><input type="checkbox" id="complete" data-act="toggle-complete" ${day.mealsComplete?'checked':''}><label for="complete">食事記録完了（この日の食事をすべて入力済み）<br><span class="small">未完了の間は収支を「暫定」表示にします</span></label></div>
+    <div class="small">摂取 ${fmt(b.intake)} kcal / ${b.status==='insufficient'?'判定に必要な情報が不足':STATUS[b.status].t}${b.diff!=null?'（差分 '+sgn(b.diff)+'）':''}</div>
+  </div>
+
+  <div class="card"><h2>食事</h2>
+    <div class="btns" style="margin:0 0 6px"><button data-act="copy-prev">前日(${esc(dlabel(Calc.addDays(d,-1)))})の食事をコピー</button></div>
+    <h3>${mf.editId?'食事を編集':'食事を追加'}</h3>
+    <label>食事区分</label><select data-f="mform.meal">${Calc.MEALS.map(m=>`<option value="${m.id}" ${mf.meal===m.id?'selected':''}>${m.label}</option>`).join('')}</select>
+    <label>食品・メニュー</label><select data-f="mform.foodId" data-rerender>
+      <option value="">（マスタ未登録・直接入力）</option>${foods.map(f=>`<option value="${f.id}" ${mf.foodId===f.id?'selected':''}>${esc(f.name)}（${fmt(f.baseAmount,2)}${esc(f.unit)}=${fmt(f.kcal)}kcal）</option>`).join('')}</select>
+    ${food ? `
+      <div class="row"><div><label>入力方法</label><select data-f="mform.mode" data-rerender><option value="amount" ${mf.mode==='amount'?'selected':''}>量（${esc(food.unit)}）</option><option value="ratio" ${mf.mode==='ratio'?'selected':''}>倍率（×基準量）</option></select></div>
+      <div><label>${mf.mode==='amount'?'量（'+esc(food.unit)+'）':'倍率（例: 1.5）'}</label><input type="number" inputmode="decimal" step="any" data-f="mform.amount" value="${esc(mf.amount)}" placeholder="${mf.mode==='amount'?fmt(food.baseAmount,2):'1'}"></div></div>`
+    : `<div class="row"><div><label>名前</label><input data-f="mform.manualName" value="${esc(mf.manualName)}" maxlength="100"></div><div><label>カロリー (kcal)</label><input type="number" inputmode="decimal" step="any" data-f="mform.manualKcal" value="${esc(mf.manualKcal)}"></div></div>`}
+    <label>メモ（任意）</label><input data-f="mform.note" value="${esc(mf.note)}" maxlength="200">
+    <div class="small" id="mpreview" style="margin-top:6px"></div>
+    <div class="btns"><button class="pri" data-act="meal-save">${mf.editId?'更新':'追加'}</button>${mf.editId?'<button data-act="meal-cancel">キャンセル</button>':''}</div>
+    ${foods.length?'':'<div class="note">マスタが空です。「マスタ」画面で登録すると選ぶだけで記録できます。</div>'}
+    <div style="margin-top:10px">${byMeal}</div>
+    <table><tr class="sum"><td>1日合計</td><td class="n">${fmt(b.intake)} kcal</td></tr></table>
+  </div>
+
+  <div class="card"><h2>筋トレ</h2>
+    <h3>${wf.editId?'筋トレを編集':'筋トレを追加'}</h3>
+    <div class="note">消費カロリーは「セッション全体の所要時間×強度(MET)×体重」で推定します。重量・回数・セットは記録用で、計算には使いません（種目ごとの加算もしません）。所要時間は<b>開始〜終了の総時間（セット間休憩を含む）</b>を入力してください。</div>
+    <label>セッション名</label><input data-f="wform.title" value="${esc(wf.title)}" placeholder="例: 胸の日" maxlength="100">
+    <div class="row"><div><label>所要時間（分）</label><input type="number" inputmode="numeric" data-f="wform.durationMin" value="${esc(wf.durationMin)}"></div>
+    <div><label>運動強度</label><select data-f="wform.intensity" data-rerender>${Calc.INTENSITY.map(i=>`<option value="${i.id}" ${wf.intensity===i.id?'selected':''}>${i.label}（MET ${i.met}）</option>`).join('')}</select></div></div>
+    <div class="small">${esc(it.desc)}（Compendium ${it.code}）</div>
+    <h3>種目（記録用）</h3>
+    <div class="small exrow"><span>種目名</span><span>kg</span><span>回</span><span>set</span><span></span></div>
+    ${wf.exercises.map((e,i)=>`<div class="exrow"><input data-f="wform.exercises.${i}.name" value="${esc(e.name)}" placeholder="ベンチプレス"><input type="number" inputmode="decimal" step="any" data-f="wform.exercises.${i}.weightKg" value="${esc(e.weightKg)}"><input type="number" inputmode="numeric" data-f="wform.exercises.${i}.reps" value="${esc(e.reps)}"><input type="number" inputmode="numeric" data-f="wform.exercises.${i}.sets" value="${esc(e.sets)}"><button class="sm danger" data-act="ex-del" data-i="${i}" aria-label="削除">×</button></div>`).join('')}
+    <div class="btns" style="margin-top:4px"><button class="sm" data-act="ex-add">＋ 種目を追加</button></div>
+    <label>消費カロリーの手入力・補正（任意・入力すると推定より優先）</label><input type="number" inputmode="decimal" step="any" data-f="wform.kcalOverride" value="${esc(wf.kcalOverride)}" placeholder="空欄なら推定式を使用">
+    <label>メモ（任意）</label><input data-f="wform.note" value="${esc(wf.note)}" maxlength="200">
+    <div class="btns"><button class="pri" data-act="w-save">${wf.editId?'更新':'追加'}</button>${wf.editId?'<button data-act="w-cancel">キャンセル</button>':''}</div>
+    <div style="margin-top:10px">${wl}</div>
+    <table><tr class="sum"><td>筋トレ追加消費 合計</td><td class="n">${b.exercise==null?'—':fmt(b.exercise)+' kcal'}</td></tr></table>
+  </div>
+  <div class="card"><div class="small">計算条件の保存: 記録するとその日の体重・設定が保存され、後から設定を変えても過去日は変わりません。</div>
+    <div class="btns"><button data-act="refresh-cond">この日の条件を現在の設定で更新</button></div></div>`;
+}
+function mealCalc(){
+  const mf = ui.mform, food = Store.data.foods.find(f=>f.id===mf.foodId);
+  if (!food) { const k = num(mf.manualKcal); return k==null?null:{kcal:k}; }
+  const a = num(mf.amount); if (a==null) return null;
+  const amount = mf.mode==='ratio' ? a*food.baseAmount : a;
+  return {amount, kcal:Calc.scaleKcal(food.kcal, food.baseAmount, amount)};
+}
+function updatePreview(){
+  const el = document.getElementById('mpreview'); if(!el) return;
+  const c = mealCalc(); const food = Store.data.foods.find(f=>f.id===ui.mform.foodId);
+  el.textContent = c ? (food ? `${fmt(c.amount,2)}${food.unit} → 約 ${fmt(c.kcal,1)} kcal` : `${fmt(c.kcal,1)} kcal`) : '';
+}
+
+/* ---------- マスタ ---------- */
+function viewMaster(){
+  const f = ui.fform, foods = Store.data.foods;
+  return `<div class="card"><h2>${f.editId?'マスタを編集':'マスタを追加'}</h2>
+    <label>食品・メニュー名</label><input data-f="fform.name" value="${esc(f.name)}" maxlength="100" placeholder="例: ごはん / いつもの朝食">
+    <div class="row"><div><label>基準量</label><input type="number" inputmode="decimal" step="any" data-f="fform.baseAmount" value="${esc(f.baseAmount)}"></div>
+    <div><label>単位</label><input data-f="fform.unit" value="${esc(f.unit)}" list="units" maxlength="20"><datalist id="units"><option>g</option><option>個</option><option>杯</option><option>食</option><option>ml</option></datalist></div></div>
+    <label>基準量あたりのカロリー (kcal)</label><input type="number" inputmode="decimal" step="any" data-f="fform.kcal" value="${esc(f.kcal)}">
+    <label>メモ（任意）</label><input data-f="fform.note" value="${esc(f.note)}" maxlength="200">
+    <div class="note">変更しても、すでに記録済みの食事のカロリーは変わりません（記録時の値を保存しています）。</div>
+    <div class="btns"><button class="pri" data-act="food-save">${f.editId?'更新':'追加'}</button>${f.editId?'<button data-act="food-cancel">キャンセル</button>':''}</div></div>
+  <div class="card"><h2>登録済み（${foods.length}件）</h2>
+    ${foods.map(x=>`<div class="item"><div><b>${esc(x.name)}</b><br><span class="small">${fmt(x.baseAmount,2)}${esc(x.unit)} = ${fmt(x.kcal)} kcal${x.note?' ・ '+esc(x.note):''}</span></div>
+      <div class="acts"><button class="sm" data-act="food-edit" data-id="${x.id}">編集</button><button class="sm danger" data-act="food-del" data-id="${x.id}">削除</button></div></div>`).join('') || '<div class="small">未登録です</div>'}
+    <div class="btns"><button data-act="food-sample">参考サンプルを追加</button><button data-act="food-export">マスタをエクスポート</button><button data-act="food-import">マスタをインポート</button></div>
+    <input type="file" id="foodfile" accept="application/json,.json" hidden>
+    <div class="small">サンプルは日本食品標準成分表（八訂）等に基づく概算の<b>参考値</b>です。商品・調理法で異なるため、必ず実際の値に編集してください。</div></div>`;
+}
+const SAMPLE_FOODS = [
+  {name:'ごはん（炊飯後）', baseAmount:100, unit:'g', kcal:156, note:'参考値: 精白米めし'},
+  {name:'卵（M・約50g）', baseAmount:1, unit:'個', kcal:71, note:'参考値: 全卵生'},
+  {name:'牛乳', baseAmount:200, unit:'ml', kcal:134, note:'参考値: 普通牛乳'},
+  {name:'鶏むね肉（皮なし・生）', baseAmount:100, unit:'g', kcal:108, note:'参考値'},
+  {name:'いつもの朝食', baseAmount:1, unit:'食', kcal:500, note:'仮の値。実際のkcalに編集してください'}
+];
+
+/* ---------- 設定 ---------- */
+function viewSettings(){
+  const s = Store.data.settings;
+  return `<div class="card"><h2>身体情報</h2>
+    <div class="note">初期状態では何も設定していません。体重は「日次記録」で日付ごとに入力します。</div>
+    <div class="row"><div><label>身長 (cm)</label><input type="number" inputmode="decimal" step="0.1" id="s-h" value="${s.heightCm??''}"></div>
+    <div><label>性別（基礎代謝式に必要）</label><select id="s-sex"><option value="">選択してください</option><option value="male" ${s.sex==='male'?'selected':''}>男性</option><option value="female" ${s.sex==='female'?'selected':''}>女性</option></select></div></div>
+    <label>生年月日</label><input type="date" id="s-b" value="${esc(s.birthDate)}">
+    <h3>日常活動レベル（筋トレは含めない）</h3>
+    ${Calc.ACTIVITY.map(a=>`<div class="opt"><input type="radio" name="act" id="act-${a.id}" value="${a.id}" ${s.activityId===a.id?'checked':''}><label for="act-${a.id}"><b>${a.label}（×${a.pal}）</b><br><span class="small">${a.ex}</span></label></div>`).join('')}
+    <h3>判定</h3>
+    <label>「ほぼ維持」の許容幅 (±kcal)</label><input type="number" inputmode="numeric" id="s-tol" value="${s.tolerance}">
+    <div class="small">現在: 差分が ±${fmt(s.tolerance)}kcal 以内なら「ほぼ維持」</div>
+    <div class="btns"><button class="pri" data-act="settings-save">設定を保存</button></div>
+    <div class="small">設定を変えても、すでに記録した日の計算条件は変わりません（日次記録の「条件を更新」で個別に反映）。</div></div>
+
+  <div class="card"><h2>データ入出力</h2>
+    <div class="btns"><button data-act="export-all">全データをバックアップ(JSON)</button><button data-act="import-all">バックアップから復元</button><button class="danger" data-act="reset">全データを削除</button></div>
+    <input type="file" id="allfile" accept="application/json,.json" hidden>
+    <div class="small">データはこの端末のブラウザ内にのみ保存されます。Safariのサイトデータ削除で消えるため、定期的にバックアップしてください。</div></div>
+
+  <div class="card"><h2>計算方法・出典</h2>
+    <details open><summary>全体の式</summary><pre>推定総消費 = 基礎代謝 × 活動係数 + 筋トレ追加消費
+差分 = 摂取 − 推定総消費（正=オーバー / 負=アンダー）
+判定: |差分| ≤ 許容幅 → ほぼ維持</pre></details>
+    <details><summary>基礎代謝: Mifflin-St Jeor式</summary><pre>男性: 10×体重(kg) + 6.25×身長(cm) − 5×年齢 + 5
+女性: 10×体重(kg) + 6.25×身長(cm) − 5×年齢 − 161</pre>
+      <div class="small">健常成人で他の一般式より推定誤差が小さいと報告されており、体重・身長・年齢・性別のみで使えるため採用。出典: Mifflin MD et al., Am J Clin Nutr 1990;51:241-247。個人差があり、体組成は反映されません。</div></details>
+    <details><summary>日常活動係数</summary><div class="small">基礎代謝に掛ける係数です。<b>筋トレの時間は含めない日常動作のみ</b>を想定して選びます（${Calc.ACTIVITY.map(a=>a.label+'×'+a.pal).join('、')}）。筋トレは別枠で加算するため、レベル選択時に筋トレ分を上乗せして選ばないでください。係数は一般的な目安から本アプリで定めた仮定値です。</div></details>
+    <details><summary>筋トレ消費: MET法</summary><pre>追加消費(kcal) = (MET − 1) × 体重(kg) × 時間(h)</pre>
+      <div class="small">MET（総消費÷安静時）から安静分の1METを引いた正味分のみを加算するため、基礎代謝との二重計上を避けています（1MET≈1kcal/kg/時の慣例換算）。係数: ${Calc.INTENSITY.map(i=>`${i.label}=${i.met}（コード${i.code}）`).join('、')}。<br>
+      出典: 2024 Adult Compendium of Physical Activities（Herrmann SD et al., J Sport Health Sci 2024）<a href="https://pacompendium.com/conditioning-exercise/" target="_blank" rel="noopener">Conditioning Exercise</a>。<br>
+      適用条件: セッション全体の時間（休憩込み）に対する平均的な値で、重量・回数・セット数からは算出しません。種目ごとには加算しません。手入力の値がある場合はそちらを優先します。</div></details>
+    <details><summary>将来のHevy連携の拡張箇所</summary><div class="small">筋トレ記録は <code>source / externalId / importedAt</code> を持つ共通形式です（手入力は source='manual'）。取込処理は共通形式のリストを作り <code>Store.importWorkouts(date, list)</code> に渡すと、source+externalId で重複判定します。Hevy側のAPI・エクスポートの有無や条件は、実装時に公式情報で確認してください（本版では未実装・未確認）。</div></details>
+  </div>
+  <div class="card"><h2>計算の自己検証</h2><div class="btns" style="margin:0"><button data-act="selftest">検証を実行</button></div><div id="testout"></div></div>`;
+}
+
+/* ---------- 描画・イベント ---------- */
+const TABS = [['dash','ダッシュボード'],['daily','日次記録'],['master','マスタ'],['settings','設定']];
+function render(){
+  document.getElementById('nav').innerHTML = TABS.map(([k,l])=>`<button data-act="tab" data-id="${k}" class="${ui.tab===k?'on':''}">${l}</button>`).join('');
+  const v = {dash:viewDash, daily:viewDaily, master:viewMaster, settings:viewSettings}[ui.tab];
+  document.getElementById('app').innerHTML = (Store.memoryOnly?'<div class="note err">この環境では保存できません。バックアップを取ってください。</div>':'') + v();
+  updatePreview();
+}
+function setPath(path, value){
+  const p = path.split('.'); let o = ui; for (let i=0;i<p.length-1;i++) o = o[p[i]]; o[p[p.length-1]] = value;
+}
+function download(name, text){
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text],{type:'application/json'})); a.download = name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+function readFile(input, cb){
+  const f = input.files[0]; input.value=''; if(!f) return;
+  if (f.size > 5e6) return toast('ファイルが大きすぎます', true);
+  const r = new FileReader(); r.onload = () => { try { cb(JSON.parse(r.result)); } catch(e){ toast('読み込み失敗: '+e.message, true); } }; r.readAsText(f);
+}
+const posNum = (v, label, {min=0, max=Infinity, req=true, gt0=false}={}) => {
+  const n = num(v);
+  if (n==null) { if (req) throw new Error(label+'を入力してください'); return null; }
+  if (n<min || n>max || (gt0 && n<=0)) throw new Error(`${label}が範囲外です`);
+  return n;
+};
+
+const actions = {
+  tab(el){ ui.tab = el.dataset.id; },
+  'date-prev'(){ ui.date = Calc.addDays(ui.date,-1); }, 'date-next'(){ ui.date = Calc.addDays(ui.date,1); }, today(){ ui.date = Calc.today(); },
+  'save-weight'(){
+    const v = document.getElementById('wt').value, d = ui.date;
+    if (v==='') { delete Store.data.weights[d]; }
+    else { const n = posNum(v,'体重',{min:20,max:300}); Store.data.weights[d] = n; }
+    const day = Store.data.days[d]; if (day) { day.cond = null; Store.lockCond(d); }
+    persist(); toast('体重を保存しました');
+  },
+  'toggle-complete'(el){
+    const d = ui.date, want = el.checked;
+    if (want && !Store.getDay(d).meals.length && !confirm('食事が0件です。摂取0kcalとして確定しますか？')) { el.checked=false; return; }
+    Store.lockCond(d); Store.mutDay(d).mealsComplete = want; persist();
+  },
+  'copy-prev'(){
+    const d = ui.date, prev = Store.getDay(Calc.addDays(d,-1));
+    if (!prev.meals.length) throw new Error('前日の食事記録がありません');
+    if (Store.getDay(d).meals.length && !confirm('この日の既存の食事に追加でコピーします。よろしいですか？')) return;
+    Store.lockCond(d); const day = Store.mutDay(d);
+    prev.meals.forEach(m => day.meals.push({...m, id:Store.uid()})); persist(); toast(prev.meals.length+'件コピーしました');
+  },
+  'meal-save'(){
+    const mf = ui.mform, d = ui.date, food = Store.data.foods.find(f=>f.id===mf.foodId);
+    let e;
+    if (food) {
+      const a = posNum(mf.amount, mf.mode==='ratio'?'倍率':'量', {gt0:true, max:100000});
+      const amount = mf.mode==='ratio' ? a*food.baseAmount : a;
+      const old = mf.editId && Store.getDay(d).meals.find(x=>x.id===mf.editId);
+      const same = old && old.foodId===food.id;
+      const baseAmount = same ? old.baseAmount : food.baseAmount, baseKcal = same ? old.baseKcal : food.kcal;
+      e = {foodId:food.id, name:same?old.name:food.name, unit:same?old.unit:food.unit, amount, baseAmount, baseKcal, kcal:Calc.scaleKcal(baseKcal, baseAmount, amount)};
+    } else {
+      const name = mf.manualName.trim(); if (!name) throw new Error('名前を入力してください');
+      const k = posNum(mf.manualKcal,'カロリー',{max:100000});
+      e = {foodId:null, name, unit:'', amount:1, baseAmount:1, baseKcal:k, kcal:k};
+    }
+    e.meal = mf.meal; e.note = mf.note.trim();
+    Store.lockCond(d); const day = Store.mutDay(d);
+    if (mf.editId) { const i = day.meals.findIndex(x=>x.id===mf.editId); day.meals[i] = {...e, id:mf.editId}; }
+    else day.meals.push({...e, id:Store.uid()});
+    ui.mform = {...newMform(), meal:mf.meal}; persist(); toast('保存しました');
+  },
+  'meal-edit'(el){
+    const m = Store.getDay(ui.date).meals.find(x=>x.id===el.dataset.id), food = Store.data.foods.find(f=>f.id===m.foodId);
+    ui.mform = {meal:m.meal, foodId:food?food.id:'', mode:'amount', amount:food?m.amount:'', manualName:m.name, manualKcal:m.kcal, note:m.note, editId:m.id};
+  },
+  'meal-del'(el){ if(!confirm('この食事記録を削除しますか？')) return; const day = Store.mutDay(ui.date); day.meals = day.meals.filter(x=>x.id!==el.dataset.id); persist(); },
+  'meal-cancel'(){ ui.mform = newMform(); },
+  'meal-to-master'(el){
+    const day = Store.mutDay(ui.date), m = day.meals.find(x=>x.id===el.dataset.id), foods = Store.data.foods;
+    const dup = foods.find(f=>f.name===m.name);
+    if (dup) { if (!confirm(`「${m.name}」は既にマスタにあります。このマスタに紐付けます（マスタは変更しません）。`)) return; m.foodId = dup.id; persist(); return; }
+    const per = m.baseAmount ? m.baseKcal : m.kcal;
+    const item = {id:Store.uid(), name:m.name, baseAmount:m.baseAmount||1, unit:m.unit||'食', kcal:per, note:'日次記録から登録'};
+    foods.push(item); m.foodId = item.id; m.unit = item.unit; persist(); toast('マスタに登録しました（基準量 '+fmt(item.baseAmount,2)+item.unit+' = '+fmt(item.kcal)+'kcal）。マスタ画面で編集できます');
+  },
+  'ex-add'(){ ui.wform.exercises.push({name:'',weightKg:'',reps:'',sets:''}); },
+  'ex-del'(el){ ui.wform.exercises.splice(+el.dataset.i,1); if(!ui.wform.exercises.length) ui.wform.exercises.push({name:'',weightKg:'',reps:'',sets:''}); },
+  'w-save'(){
+    const wf = ui.wform, d = ui.date;
+    const dur = posNum(wf.durationMin,'所要時間',{gt0:true,max:1440});
+    const ko = posNum(wf.kcalOverride,'消費カロリー',{req:false,max:20000});
+    const exs = wf.exercises.filter(e=>e.name.trim()||e.weightKg!==''||e.reps!==''||e.sets!=='').map(e => {
+      if (!e.name.trim()) throw new Error('種目名を入力してください');
+      return {name:e.name.trim(), weightKg:posNum(e.weightKg||0,'重量',{max:1000}), reps:posNum(e.reps||0,'回数',{max:1000}), sets:posNum(e.sets||0,'セット数',{max:1000})};
+    });
+    const old = wf.editId && Store.getDay(d).workouts.find(x=>x.id===wf.editId);
+    const w = {id:wf.editId||Store.uid(), source:old?old.source:'manual', externalId:old?old.externalId:null, importedAt:old?old.importedAt:null,
+      title:wf.title.trim(), durationMin:dur, intensity:wf.intensity, metUsed:Calc.INTENSITY.find(i=>i.id===wf.intensity).met, kcalOverride:ko, exercises:exs, note:wf.note.trim()};
+    Store.lockCond(d); const day = Store.mutDay(d);
+    if (old) day.workouts[day.workouts.findIndex(x=>x.id===old.id)] = w; else day.workouts.push(w);
+    ui.wform = newWform(); persist(); toast('保存しました');
+  },
+  'w-edit'(el){
+    const w = Store.getDay(ui.date).workouts.find(x=>x.id===el.dataset.id);
+    ui.wform = {editId:w.id, title:w.title, durationMin:w.durationMin, intensity:w.intensity, kcalOverride:w.kcalOverride??'', note:w.note,
+      exercises:w.exercises.length?w.exercises.map(e=>({...e})):[{name:'',weightKg:'',reps:'',sets:''}], source:w.source, externalId:w.externalId, importedAt:w.importedAt};
+  },
+  'w-del'(el){ if(!confirm('この筋トレ記録を削除しますか？')) return; const day = Store.mutDay(ui.date); day.workouts = day.workouts.filter(x=>x.id!==el.dataset.id); persist(); },
+  'w-cancel'(){ ui.wform = newWform(); },
+  'refresh-cond'(){ if(!confirm('この日の計算条件（体重・身長・活動レベル・許容幅）を現在の設定で更新します。よろしいですか？')) return; Store.refreshCond(ui.date); persist(); toast('更新しました'); },
+  'food-save'(){
+    const f = ui.fform;
+    const item = Store.validateFood({id:f.editId||Store.uid(), name:f.name, baseAmount:posNum(f.baseAmount,'基準量',{gt0:true,max:100000}), unit:f.unit.trim(), kcal:posNum(f.kcal,'カロリー',{max:100000}), note:f.note.trim()}, m=>{throw new Error(m);});
+    if (!item.name) throw new Error('名前を入力してください');
+    const foods = Store.data.foods;
+    if (f.editId) foods[foods.findIndex(x=>x.id===f.editId)] = item; else foods.push(item);
+    ui.fform = newFform(); persist(); toast('保存しました');
+  },
+  'food-edit'(el){ const x = Store.data.foods.find(f=>f.id===el.dataset.id); ui.fform = {editId:x.id, name:x.name, baseAmount:x.baseAmount, unit:x.unit, kcal:x.kcal, note:x.note}; scrollTo(0,0); },
+  'food-del'(el){ if(!confirm('このマスタを削除しますか？（過去の食事記録は変わりません）')) return; Store.data.foods = Store.data.foods.filter(f=>f.id!==el.dataset.id); persist(); },
+  'food-cancel'(){ ui.fform = newFform(); },
+  'food-sample'(){ SAMPLE_FOODS.forEach(s => Store.data.foods.push({...s, id:Store.uid()})); persist(); toast('参考サンプルを追加しました。値を編集してください'); },
+  'food-export'(){ download('foods-'+Calc.today()+'.json', JSON.stringify({type:'kcal-foods', schemaVersion:1, foods:Store.data.foods}, null, 2)); },
+  'food-import'(){ document.getElementById('foodfile').click(); },
+  'settings-save'(){
+    const g = id => document.getElementById(id).value, act = document.querySelector('input[name=act]:checked');
+    Store.data.settings = {
+      heightCm:posNum(g('s-h'),'身長',{req:false,min:50,max:250}), sex:g('s-sex'), birthDate:g('s-b'), activityId:act?act.value:'',
+      tolerance:posNum(g('s-tol'),'許容幅',{max:2000})
+    };
+    if (Store.data.settings.birthDate) { const a = Calc.ageOn(Store.data.settings.birthDate, Calc.today()); if (a==null||a<0||a>120) throw new Error('生年月日が不正です'); }
+    persist(); toast('設定を保存しました');
+  },
+  'export-all'(){ download('kcal-backup-'+Calc.today()+'.json', Store.exportAll()); },
+  'import-all'(){ document.getElementById('allfile').click(); },
+  reset(){ if(!confirm('全データを削除します。元に戻せません。よろしいですか？')) return; if(!confirm('本当に削除しますか？（先にバックアップ推奨）')) return; Store.replaceAll(Store.defaults()); ui.mform=newMform(); ui.wform=newWform(); ui.fform=newFform(); toast('削除しました'); },
+  selftest(){
+    const r = Calc.selfTest();
+    document.getElementById('testout').innerHTML = `<p><b>${r.filter(x=>x.ok).length}/${r.length} 合格</b></p><table>${r.map(x=>`<tr><td>${x.ok?'✔ OK':'✖ NG'}</td><td>${esc(x.name)}<div class="small">${esc(x.detail)}</div></td></tr>`).join('')}</table>`;
+    return 'noRender';
+  }
+};
+
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]'); if (!el || el.tagName==='INPUT' && el.type==='checkbox' && e.type!=='change') return;
+  if (el.tagName==='INPUT') return;
+  run(el);
+});
+function run(el){
+  try { if (actions[el.dataset.act](el) !== 'noRender') render(); }
+  catch(err){ toast(err.message, true); render(); }
+}
+document.addEventListener('change', e => {
+  const t = e.target;
+  if (t.dataset.act==='toggle-complete') { run(t); return; }
+  if (t.id==='foodfile') readFile(t, o => {
+    if (!o || !Array.isArray(o.foods)) throw new Error('マスタJSONの形式が不正です');
+    const items = o.foods.map(f => Store.validateFood(f, m=>{throw new Error(m);}));
+    if (!confirm(`${items.length}件を読み込みます。同名の項目は上書き、それ以外は追加します。よろしいですか？`)) return;
+    items.forEach(it => { const i = Store.data.foods.findIndex(f=>f.name===it.name); if (i>=0) Store.data.foods[i] = {...it, id:Store.data.foods[i].id}; else Store.data.foods.push({...it, id:Store.uid()}); });
+    persist(); render(); toast('インポートしました');
+  });
+  if (t.id==='allfile') readFile(t, o => {
+    Store.validate(o);
+    if (!confirm('現在の全データを、読み込んだバックアップで上書きします。よろしいですか？')) return;
+    Store.replaceAll(o); render(); toast('復元しました');
+  });
+  if (t.dataset.f==='date') { if (Calc.parseDate(t.value)) { ui.date = t.value; render(); } }
+  else if (t.dataset.f && t.dataset.rerender!==undefined) { setPath(t.dataset.f, t.value); if (t.dataset.f==='mform.foodId') { ui.mform.amount=''; ui.mform.mode='amount'; } render(); }
+});
+document.addEventListener('input', e => {
+  const t = e.target; if (!t.dataset.f || t.dataset.f==='date' || t.dataset.rerender!==undefined) return;
+  setPath(t.dataset.f, t.value); if (t.dataset.f.startsWith('mform.')) updatePreview();
+});
+
+Store.load();
+render();
+</script>
+</body>
+</html>
