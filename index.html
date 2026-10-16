@@ -1212,6 +1212,31 @@ const Api = {
   }
 };
 
+// GitHub Pages 等の静的配信で行う、Hevy 公式APIへのブラウザ接続テスト。
+// APIキーはこのオブジェクト（ページを開いている間のメモリ）だけに保持する。
+const DirectHevy = {
+  key:'', testing:false, result:null,
+  async test(){
+    const field = document.getElementById('hv-direct-key');
+    const key = field ? field.value.trim() : this.key;
+    if (!key) throw new Error('Hevy APIキーを入力してください');
+    this.key = key; this.testing = true; this.result = null; render();
+    try {
+      // api-key ヘッダーにより、ブラウザは OPTIONS のプリフライト後に GET を行う。
+      const response = await fetch('https://api.hevyapp.com/v1/user/info', {
+        method:'GET', mode:'cors', cache:'no-store', headers:{'api-key':key, 'Accept':'application/json'}
+      });
+      let data = null; try { data = await response.json(); } catch(e) {}
+      if (!response.ok) throw new Error(`Hevy が HTTP ${response.status} を返しました`);
+      if (!data || !data.data || typeof data.data.id!=='string') throw new Error('Hevyのアカウント情報の形式が想定と異なります');
+      this.result = {ok:true, account:{name:typeof data.data.name==='string'?data.data.name:'', username:typeof data.data.username==='string'?data.data.username:''}};
+    } catch(e) {
+      // CORS違反時はブラウザが詳細を開示しないため、ここにAPIキーや応答本文は出さない。
+      this.result = {ok:false, message:e instanceof TypeError ? 'ブラウザがHevyへの通信を許可しませんでした（CORSまたはネットワークの問題）。開発者ツールのConsole/NetworkでOPTIONSとGETを確認してください。' : (e.message || '接続テストに失敗しました')};
+    } finally { this.testing = false; render(); }
+  }
+};
+
 const AUTO_SYNC_AFTER_MS = 15*60*1000, MIN_CLIENT_SYNC_MS = 20*1000;
 const Hevy = {
   st:null, syncing:false, error:'', lastRun:0, testOk:null, changingKey:false, disc:false, lastSummary:null,
@@ -1296,7 +1321,15 @@ async function authSubmit(path, extra){
 
 function hevyCard(){
   const card = (inner) => `<div class="card"><h2>Hevy連携</h2>${inner}</div>`;
-  if (!Api.available) return card(`<div class="note">この画面は<b>バックエンドなし</b>（静的配信またはローカルファイル）で動いています。Hevy連携は、招待制のサーバー版（ログインが必要なURL）でのみ使えます。</div><div class="small">APIキーはサーバーが暗号化して保管します。このHTML単体にはキー入力欄を設けていません。</div>`);
+  if (!Api.available) {
+    const r = DirectHevy.result;
+    return card(`<div class="note"><b>ブラウザ直接連携の接続テスト</b>（GitHub PagesなどHTTPSの静的配信専用）</div>
+      <div class="small">Hevy公式APIへのブラウザ通信で、CORSのプリフライトと <code>GET /v1/user/info</code> を検証します。この段階では同期・取得・保存は行いません。</div>
+      <label>Hevy APIキー</label><input id="hv-direct-key" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(DirectHevy.key)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+      <div class="btns"><button class="pri" data-act="hv-direct-test" ${DirectHevy.testing?'disabled':''}>${DirectHevy.testing?'接続テスト中...':'接続テスト'}</button></div>
+      ${r ? (r.ok ? `<div class="note">接続成功: <b>${esc(r.account.name||r.account.username||'Hevyアカウント')}</b>${r.account.username?'（'+esc(r.account.username)+'）':''}<br>このGitHub Pagesのオリジンから、CORSプリフライトと本リクエストが成功しました。</div>` : `<div class="note err">接続失敗: ${esc(r.message)}</div>`) : ''}
+      <div class="small">キーはページを閉じる・再読み込みするまでのメモリにだけ置きます。端末保存、サーバー送信、ログ出力、Gitへの書き込みはしません。</div>`);
+  }
   const st = Hevy.st, s = Store.data.settings, H = Store.data.hevy;
   const common = `<div class="small">非公式の連携です（Hevy公認・提供許諾取得済みではありません）。APIはHevy Proの利用者向けで、利用条件はHevy公式で確認してください。Hevyへ記録を書き込むことはありません。</div>`;
   const keyForm = `<label>Hevy APIキー</label>
@@ -1535,6 +1568,7 @@ const actions = {
     else { w.intensity = ''; w.metUsed = null; w.calc = null; }
     Store.lockCond(d); ui.hv.hform = null; persist(); toast('補正を保存しました');
   },
+  async 'hv-direct-test'(){ await DirectHevy.test(); },
   'auth-login'(){ authSubmit('/api/login', {}); return 'noRender'; },
   'auth-accept'(){ authSubmit('/api/invite/accept', {token:ui.inviteToken}); return 'noRender'; },
   async logout(){ await Api.call('POST', '/api/logout', {}); location.href = '/'; },
