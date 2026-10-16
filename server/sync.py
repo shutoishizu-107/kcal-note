@@ -51,13 +51,41 @@ def fetch_pages(client, path, key, params, page_size, delay, sleep):
     while True:
         data = client.get(path, {**params, "page": page, "pageSize": page_size})
         items = data.get(key) if isinstance(data, dict) else None
-        pc = data.get("page_count") if isinstance(data, dict) else None
-        if not isinstance(items, list) or not isinstance(pc, int) or isinstance(pc, bool) or pc < 0:
-            raise HevyError("bad", "Hevyの応答形式が想定と異なります")
+        # /workouts/events は公式仕様では events だが、提供側の移行中の
+        # workout_events / workoutEvents と data.events も読み取り専用で受容する。
+        # 別の配列を推測して取り込むことはせず、記録の消失を防ぐ。
+        if key == "events" and isinstance(data, dict) and not isinstance(items, list):
+            for alias in ("workout_events", "workoutEvents"):
+                if isinstance(data.get(alias), list):
+                    items = data[alias]
+                    break
+            else:
+                nested = data.get("data")
+                if isinstance(nested, dict) and isinstance(nested.get("events"), list):
+                    items = nested["events"]
+                # Hevy が events エンドポイントから workouts を返すケース。
+                # 削除の推測はせず、各レコードを更新イベントとしてのみ反映する。
+                elif isinstance(data.get("workouts"), list):
+                    items = [{"type": "updated", "workout": w} for w in data["workouts"]]
+        # Hevy の公式仕様は page_count だが、API の段階的な変更・空結果で
+        # ページ情報が省略される応答にも対応する。空でないページのページ数が
+        # 不明な場合は続きの取りこぼしを避けるため、従来どおり失敗にする。
+        pc = data.get("page_count", data.get("pageCount")) if isinstance(data, dict) else None
+        if isinstance(pc, str) and pc.isdecimal():
+            pc = int(pc)
+        if not isinstance(items, list):
+            fields = ", ".join(sorted(str(k) for k in data)[:8]) if isinstance(data, dict) else type(data).__name__
+            raise HevyError("bad", f"Hevyの応答形式が想定と異なります ({path}: {key} が配列ではありません。受信項目: {fields or 'なし'})")
+        if pc is None and not items:
+            return out
+        if not isinstance(pc, int) or isinstance(pc, bool) or pc < 0:
+            raise HevyError("bad", f"Hevyの応答形式が想定と異なります ({path}: page_count が不正です)")
         if page_count is None:
             page_count = pc
             if page_count > MAX_PAGES:
                 raise HevyError("bad", "ページ数が異常に多いため中止しました")
+        elif pc != page_count:
+            raise HevyError("bad", f"Hevyの応答形式が想定と異なります ({path}: page_count が途中で変わりました)")
         out.extend(items)
         if page >= page_count:
             return out

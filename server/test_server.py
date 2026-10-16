@@ -427,6 +427,84 @@ class SyncTests(Base):
         self.assertEqual(len(t["templates"]), 3)
         self.assertTrue(all("thumbnail_url" not in x for x in t["templates"]))
 
+    def test_sync_accepts_empty_events_without_pagination_metadata(self):
+        # Hevy 側で空の events 応答から page_count が省略されても、続きは無く
+        # 安全に同期完了できる。実データがある場合はページ数を必須のままにする。
+        self.sync(self.c, self.csrf)
+        original = self.fake.events["TEST-ACC-A"]
+        self.fake.events["TEST-ACC-A"] = []
+        handler = self.fake.srv.RequestHandlerClass
+        original_page = handler._page
+
+        def page_without_metadata(instance, items, page, size, key):
+            if key == "events" and not items:
+                return instance._send(200, {key: []})
+            return original_page(instance, items, page, size, key)
+
+        handler._page = page_without_metadata
+        try:
+            r = self.sync(self.c, self.csrf)
+        finally:
+            handler._page = original_page
+            self.fake.events["TEST-ACC-A"] = original
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_sync_accepts_camel_case_page_count(self):
+        handler = self.fake.srv.RequestHandlerClass
+        original_page = handler._page
+
+        def camel_case_page_count(instance, items, page, size, key):
+            chunk = items[(page - 1) * size: page * size]
+            return instance._send(200, {"page": page, "pageCount": -(-len(items) // size), key: chunk})
+
+        handler._page = camel_case_page_count
+        try:
+            r = self.sync(self.c, self.csrf)
+        finally:
+            handler._page = original_page
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_sync_accepts_event_response_aliases(self):
+        self.sync(self.c, self.csrf)
+        self.fake.add("TEST-ACC-A", workout("W1", 1, updated=iso(utcnow() + datetime.timedelta(minutes=1))))
+        handler = self.fake.srv.RequestHandlerClass
+        original_page = handler._page
+
+        def event_alias(instance, items, page, size, key):
+            if key == "events":
+                pc = -(-len(items) // size)
+                return instance._send(200, {"page": page, "page_count": pc, "workout_events": items[(page - 1) * size: page * size]})
+            return original_page(instance, items, page, size, key)
+
+        handler._page = event_alias
+        try:
+            r = self.sync(self.c, self.csrf)
+        finally:
+            handler._page = original_page
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["summary"]["added"], 1)
+
+    def test_sync_treats_workouts_event_response_as_updates(self):
+        self.sync(self.c, self.csrf)
+        self.fake.add("TEST-ACC-A", workout("W1", 1, updated=iso(utcnow() + datetime.timedelta(minutes=1))))
+        handler = self.fake.srv.RequestHandlerClass
+        original_page = handler._page
+
+        def event_workouts(instance, items, page, size, key):
+            if key == "events":
+                pc = -(-len(items) // size)
+                workouts = [event["workout"] for event in items if event.get("type") == "updated"]
+                return instance._send(200, {"page": page, "page_count": pc, "workouts": workouts})
+            return original_page(instance, items, page, size, key)
+
+        handler._page = event_workouts
+        try:
+            r = self.sync(self.c, self.csrf)
+        finally:
+            handler._page = original_page
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["summary"]["added"], 1)
+
     def test_disconnect_keep_or_delete_history_and_generation(self):
         self.fake.add("TEST-ACC-A", workout("W1", 2))
         self.sync(self.c, self.csrf)

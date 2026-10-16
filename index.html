@@ -160,7 +160,9 @@ const Calc = (() => {
   // 筋トレ消費: 手入力があればそれを採用。なければ (MET-1)×体重×時間。種目単位では加算しない。
   function workoutKcal(w, weightKg){
     if (w.kcalOverride != null) return {kcal:w.kcalOverride, method:'manual'};
-    if (!weightKg || !w.durationMin || !w.metUsed) return {kcal:0, method:'none'};
+    if (!w.metUsed) return {kcal:0, method:'none', reason:'intensity'};
+    if (!weightKg) return {kcal:0, method:'none', reason:'weight'};
+    if (!w.durationMin) return {kcal:0, method:'none', reason:'duration'};
     return {kcal:(w.metUsed-1)*weightKg*(w.durationMin/60), method:'met'};
   }
   function missingFields(cond, date){
@@ -180,12 +182,14 @@ const Calc = (() => {
     const intake = meals.reduce((s,m)=>s+m.kcal,0);
     const missing = missingFields(cond, date);
     const out = {intake, mealCount:meals.length, missing, status:'', diff:null, bmr:null, daily:null, exercise:null, exerciseUncalculated:0, total:null, tol:cond?cond.tol:null};
+    // 筋トレ追加消費は体重だけで算出できる。基礎代謝・収支の前提が不足して
+    // いても、取得済みのHevy記録を「—」にせず表示する。
+    out.exercise = workouts.reduce((s,w)=>s+workoutKcal(w, cond&&cond.weightKg).kcal,0);
+    out.exerciseUncalculated = workouts.filter(w=>workoutKcal(w, cond&&cond.weightKg).method==='none').length;
     if (missing.length){ out.status='insufficient'; return out; }
     const b = bmr({weightKg:cond.weightKg, heightCm:cond.heightCm, age:ageOn(cond.birthDate,date), sex:cond.sex});
     const pal = ACTIVITY.find(x=>x.id===cond.activityId).pal;
     out.pal = pal; out.bmr = b; out.daily = b*pal;
-    out.exercise = workouts.reduce((s,w)=>s+workoutKcal(w,cond.weightKg).kcal,0);
-    out.exerciseUncalculated = workouts.filter(w=>workoutKcal(w,cond.weightKg).method==='none').length; // 0kcalとは区別し、未算入として扱う
     out.total = out.daily + out.exercise;
     out.diff = intake - out.total;
     if (!day.mealsComplete) out.status = meals.length ? 'provisional' : 'unrecorded';
@@ -202,6 +206,8 @@ const Calc = (() => {
     eq('Mifflin 女性30歳 55kg 160cm = 550+1000-150-161 = 1239', bmr({weightKg:55,heightCm:160,age:30,sex:'female'}), 1239);
     eq('筋トレ MET5.0 60分 70kg = (5-1)×70×1 = 280kcal', workoutKcal({durationMin:60,metUsed:5},70).kcal, 280);
     eq('手入力の消費kcalが優先される', workoutKcal({durationMin:60,metUsed:5,kcalOverride:300},70).kcal, 300);
+    is('MET設定済み・体重未入力は体重不足として区別', workoutKcal({durationMin:60,metUsed:5},null).reason, 'weight');
+    is('体重設定済み・MET未設定は強度不足として区別', workoutKcal({durationMin:60,metUsed:null},70).reason, 'intensity');
     is('誕生日前は年齢-1', ageOn('1990-12-31','2026-10-16'), 35);
     const cond = {heightCm:175, sex:'male', birthDate:'1996-01-01', weightKg:70, activityId:'sedentary', tol:100};
     const ex = [{name:'A',weightKg:60,reps:10,sets:3},{name:'B',weightKg:40,reps:10,sets:3},{name:'C',weightKg:20,reps:10,sets:3}];
@@ -210,6 +216,9 @@ const Calc = (() => {
     const b = dayBalance('2026-01-01', base, cond);
     eq('総消費=BMR×1.2+筋トレ280（種目数に依存しない）', b.total, 1648.75*1.2+280);
     eq('筋トレ追加は280のみ（二重計上なし）', b.exercise, 280);
+    const onlyWeight = dayBalance('2026-01-01', base, {...cond, heightCm:null, activityId:''});
+    is('収支条件が不足しても、体重があれば筋トレ追加消費は集計する', onlyWeight.exercise, 280);
+    is('収支条件が不足した状態は情報不足のまま維持する', onlyWeight.status, 'insufficient');
     eq('差分=摂取2500-総消費2258.5=+241.5', b.diff, 241.5);
     is('差分>許容幅 → over', b.status, 'over');
     is('摂取1800 → under', dayBalance('2026-01-01',{mealsComplete:true,meals:[{kcal:1800}],workouts:[]},cond).status, 'under');
@@ -626,7 +635,16 @@ const HevySync = (() => {
       durationMin:elapsedMin(w.start_time, w.end_time), durationBasis:'elapsed_incl_rest',
       exercises:(Array.isArray(w.exercises) ? w.exercises.slice().sort((a,b)=>(a.index??0)-(b.index??0)) : []).map(e=>mapExercise(e, ctx.accountKey, ctx.exercises || [])),
       intensity:'', metUsed:null, kcalOverride:null, note:'', calc:null};
-    if (ex) { rec.intensity = ex.intensity; rec.metUsed = ex.metUsed; rec.kcalOverride = ex.kcalOverride; rec.note = ex.note; rec.calc = ex.calc; }
+    if (ex) {
+      rec.intensity = ex.intensity; rec.metUsed = ex.metUsed; rec.kcalOverride = ex.kcalOverride; rec.note = ex.note; rec.calc = ex.calc;
+      // 旧版データには強度IDだけが保存され、METが空の記録がある。
+      // 有効な強度をユーザーが選んでいた場合は、その選択を維持して補完する。
+      const oldIt = Calc.INTENSITY.find(i=>i.id===rec.intensity);
+      if (oldIt && rec.metUsed==null) {
+        rec.metUsed = oldIt.met;
+        rec.calc = {version:CALC_VERSION, method:'session_met', intensity:oldIt.id, met:oldIt.met, timeBasis:'elapsed_incl_rest', note:'保存済み強度からMETを復元', appliedAt:ctx.nowIso};
+      }
+    }
     else if (ctx.defaultIntensity) {
       const it = Calc.INTENSITY.find(i=>i.id===ctx.defaultIntensity);
       if (it) { rec.intensity = it.id; rec.metUsed = it.met; rec.calc = {version:CALC_VERSION, method:'session_met', intensity:it.id, met:it.met, timeBasis:'elapsed_incl_rest', note:'取り込み時の既定強度', appliedAt:ctx.nowIso}; }
@@ -663,7 +681,9 @@ const HevySync = (() => {
     const it = Calc.INTENSITY.find(i=>i.id===intensityId); let n = 0;
     if (!it) return 0;
     for (const d of Object.values(data.days)) for (const w of d.workouts) if (w.source==='hevy' && w.kcalOverride==null && w.metUsed==null) {
-      w.intensity = it.id; w.metUsed = it.met; w.calc = {version:CALC_VERSION, method:'session_met', intensity:it.id, met:it.met, timeBasis:'elapsed_incl_rest', note:'未計算の記録へ既定強度を適用', appliedAt:nowIso}; n++;
+      // 強度名だけが残る旧データは、その選択を尊重してMETを復元する。
+      const chosen = Calc.INTENSITY.find(i=>i.id===w.intensity) || it;
+      w.intensity = chosen.id; w.metUsed = chosen.met; w.calc = {version:CALC_VERSION, method:'session_met', intensity:chosen.id, met:chosen.met, timeBasis:'elapsed_incl_rest', note:'未計算の記録へ既定強度を適用', appliedAt:nowIso}; n++;
     }
     return n;
   }
@@ -725,6 +745,8 @@ const HevySync = (() => {
     ok('purge: 指定アカウントのHevy記録だけ削除', purge(d4,'acctX')===0 && purge(d4,'acct1')===1);
     const d5 = mk(); applyChanges(d5, [{kind:'upsert', workoutId:'W1', workout:hw('W1')}], ctx());
     ok('未計算の記録へ既定強度を明示的に適用できる', applyDefaultIntensity(d5, 'light', nowIso)===1 && d5.days['2026-02-10'].workouts[0].metUsed===3.5);
+    d5.days['2026-02-10'].workouts[0] = {...d5.days['2026-02-10'].workouts[0], intensity:'moderate', metUsed:null, calc:null};
+    ok('強度名だけが残る旧記録は、その強度のMETを復元する', applyDefaultIntensity(d5, 'light', nowIso)===1 && d5.days['2026-02-10'].workouts[0].intensity==='moderate' && d5.days['2026-02-10'].workouts[0].metUsed===5);
     const f = templatesToFile([{id:'TEST-0001', title:'Fictional Bench Press (Barbell)', type:'weight_reps', primary_muscle_group:'chest', secondary_muscle_groups:['triceps'], equipment:'barbell', is_custom:false, thumbnail_url:'https://example.invalid/a.png'}], 'acct1', nowIso);
     const parsed = Ex.parseFile(f);
     ok('テンプレート→種目マスタ形式へ変換（画像URLは保持しない）', parsed.items.length===1 && parsed.items[0].thumbnailUrl===null && parsed.items[0].equipment==='barbell');
@@ -1331,7 +1353,8 @@ function hevyAdjustForm(){
 const setsText = e => Array.isArray(e.setsDetail) ? e.setsDetail.map(s=>(s.type==='warmup'?'W:':'')+[s.weightKg!=null?s.weightKg+'kg':'', s.reps!=null?'×'+s.reps:'', s.durationSeconds!=null?s.durationSeconds+'秒':'', s.distanceMeters!=null?s.distanceMeters+'m':''].join('')).join(', ') : `${e.weightKg}kg×${e.reps}回×${e.sets}set`;
 function workoutItem(x, cond){
   const k = Calc.workoutKcal(x, cond.weightKg), it = Calc.INTENSITY.find(i=>i.id===x.intensity), hevy = x.source==='hevy', tz = x.tz || Store.data.settings.timezone || 'Asia/Tokyo';
-  const kcalText = k.method==='none' ? '<b>未計算</b>（強度が未設定のため。0kcalではなく収支に未算入）' : (cond.weightKg||k.method==='manual') ? `${fmt(k.kcal)} kcal（${k.method==='manual'?'外部機器の推定値／手入力値':'セッション推定: MET '+x.metUsed+'×経過時間'}）` : '体重未入力のため算出不可';
+  const missingKcal = k.reason==='intensity' ? '強度が未設定のため' : k.reason==='weight' ? 'この日の体重が未入力のため' : '経過時間が未入力のため';
+  const kcalText = k.method==='none' ? `<b>未計算</b>（${missingKcal}。0kcalではなく収支に未算入）` : `${fmt(k.kcal)} kcal（${k.method==='manual'?'外部機器の推定値／手入力値':'セッション推定: MET '+x.metUsed+'×経過時間'}）`;
   const head = hevy ? `<b>${esc(x.title||'(名称なし)')}</b> <span class="tag ok">Hevy</span> <span class="small">${esc(HevySync.timeInTz(x.startTime, tz))}〜${esc(x.endTime?HevySync.timeInTz(x.endTime, tz):'')}（${esc(tz)}）・経過${fmt(x.durationMin,1)}分（休憩含む）${it?'・'+esc(it.label):''}</span>`
     : `<b>${esc(x.title||'(名称なし)')}</b> <span class="small">${fmt(x.durationMin)}分・${esc(it?it.label:'')}・MET ${x.metUsed}</span>`;
   return `<div class="item"><div>${head}<br>
