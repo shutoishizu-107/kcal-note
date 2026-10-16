@@ -186,12 +186,12 @@ def _key_for_cfg(text):
 class AuthTests(Base):
     def test_bootstrap_admin_only_once_and_no_default_password(self):
         out = __import__("io").StringIO()
-        os.environ.update({"HEVY_KEY_ENCRYPTION_KEY": self.enc, "DATABASE_PATH": self.cfg.db_path, "APP_ENV": "test"})
-        self.assertEqual(manage.main(["bootstrap-admin"], out=out), 0)
+        env = {"HEVY_KEY_ENCRYPTION_KEY": self.enc, "DATABASE_PATH": self.cfg.db_path, "APP_ENV": "test"}
+        self.assertEqual(manage.main(["bootstrap-admin"], out=out, env=env, home=self.tmp.name), 0)
         self.assertIn("#invite=", out.getvalue())
         self.assertEqual(self.db().execute("SELECT COUNT(*) FROM users").fetchone()[0], 0)  # 既定のユーザー/パスワードは作らない
         c, csrf, uid = self.make_user("admin_user", role="admin")
-        self.assertEqual(manage.main(["bootstrap-admin"], out=__import__("io").StringIO()), 1)  # 管理者が居れば発行しない
+        self.assertEqual(manage.main(["bootstrap-admin"], out=__import__("io").StringIO(), err=__import__("io").StringIO(), env=env, home=self.tmp.name), 1)  # 管理者が居れば発行しない
 
     def test_invite_is_single_use_and_expires(self):
         conn = self.db()

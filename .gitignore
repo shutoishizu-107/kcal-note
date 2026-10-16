@@ -6,5 +6,7 @@ __pycache__/
 
 .venv/
 data/
-test_out.txt
+test_out*.txt
 .env
+.env.*
+!.env.example

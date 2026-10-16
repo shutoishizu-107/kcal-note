@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from flask import Flask, Response, g, jsonify, request, send_from_directory
 
 from . import accounts, security
-from .config import load_config
+from .config import load_config, verify_keys_match_db
 from .db import connect, init_db
 from .hevy_client import HevyClient, HevyError
 from .sync import SyncError, get_state, iso, normalize_user, parse_iso, run_sync, utcnow
@@ -28,6 +28,7 @@ def account_key(account_id):
 
 def create_app(config=None, sleep=time.sleep):
     cfg = config or load_config()
+    verify_keys_match_db(cfg.db_path, cfg.enc_keys)  # 鍵が既存データと一致しないなら、DBに触れる前に停止
     ring = security.KeyRing(cfg.enc_keys)
     init_db(cfg.db_path)
     app = Flask(__name__, static_folder=None)
