@@ -571,7 +571,7 @@ const actions = {
     const dup = foods.find(f=>f.name===m.name);
     if (dup) { if (!confirm(`「${m.name}」は既にマスタにあります。このマスタに紐付けます（マスタは変更しません）。`)) return; m.foodId = dup.id; persist(); return; }
     const per = m.baseAmount ? m.baseKcal : m.kcal;
-    const item = {id:Store.uid(), name:m.name, baseAmount:m.baseAmount||1, unit:m.unit||'食', kcal:per, note:'日次記録から登録'};
+    const item = {id:Store.uid(), name:m.name, baseAmount:m.baseAmount||1, unit:m.unit||'食', kcal:per, note:m.note||''};
     foods.push(item); m.foodId = item.id; m.unit = item.unit; persist(); toast('マスタに登録しました（基準量 '+fmt(item.baseAmount,2)+item.unit+' = '+fmt(item.kcal)+'kcal）。マスタ画面で編集できます');
   },
   'ex-add'(){ ui.wform.exercises.push({name:'',weightKg:'',reps:'',sets:''}); },
