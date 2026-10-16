@@ -311,7 +311,7 @@ const sgn = v => (v>0?'+':v<0?'−':'±') + fmt(Math.abs(v));
 const WD = ['日','月','火','水','木','金','土'];
 const dlabel = s => { const d = Calc.parseDate(s); return `${d.getMonth()+1}/${d.getDate()}(${WD[d.getDay()]})`; };
 
-const ui = {tab:'dash', date:Calc.today(), dview:'chart', range:7, calMonth:null, calFor:null, mform:null, wform:null, fform:null};
+const ui = {tab:'dash', date:Calc.today(), dview:'chart', aview:'bal', lift:'', range:7, calMonth:null, calFor:null, mform:null, wform:null, fform:null};
 const newMform = () => ({meal:'breakfast', foodId:'', mode:'amount', amount:'', manualName:'', manualKcal:'', note:'', editId:null});
 const newWform = () => ({editId:null, title:'', durationMin:'', intensity:'moderate', kcalOverride:'', note:'', exercises:[{name:'',weightKg:'',reps:'',sets:''}], source:'manual', externalId:null, importedAt:null});
 const newFform = () => ({editId:null, name:'', baseAmount:'', unit:'g', kcal:'', note:''});
@@ -354,9 +354,61 @@ function viewDash(){
     <div class="card"><h2>推移</h2>
       <div class="seg">${[['chart','グラフ'],['cal','カレンダー']].map(([k,l])=>`<button data-act="dview" data-id="${k}" class="${ui.dview===k?'on':''}">${l}</button>`).join('')}</div>
       ${ui.dview==='cal' ? calendar() : `<h3>直近7日間</h3>${chart()}
-      <div class="small">棒は差分（上=オーバー、下=アンダー）。破線枠は暫定。“—”は未記録・情報不足で、0kcalとは区別しています。それ以前はカレンダーで確認できます。</div>`}</div>`;
+      <div class="small">棒は差分（上=オーバー、下=アンダー）。破線枠は暫定。“—”は未記録・情報不足で、0kcalとは区別しています。それ以前はカレンダーで確認できます。</div>`}</div>
+    ${viewAnalysis()}`;
 }
 const SHORT = {over:'オーバー',under:'アンダー',maintain:'維持',provisional:'暫定',unrecorded:'未記録',insufficient:'情報不足'};
+/* ---------- 分析 ---------- */
+function viewAnalysis(){
+  const tabs = [['bal','累積収支'],['wt','体重'],['lift','種目']];
+  const body = {bal:anBalance, wt:anWeight, lift:anLift}[ui.aview]();
+  return `<div class="card"><h2>分析</h2><div class="seg">${tabs.map(([k,l])=>`<button data-act="aview" data-id="${k}" class="${ui.aview===k?'on':''}">${l}</button>`).join('')}</div>${body}</div>`;
+}
+function anBalance(){
+  const rows = [7,30].map(n => {
+    const bs = []; for (let i=0;i<n;i++) bs.push(balanceOf(Calc.addDays(ui.date,-i)));
+    const j = bs.filter(b=>['over','under','maintain'].includes(b.status)), sum = j.reduce((s,b)=>s+b.diff,0);
+    return `<tr><td>直近${n}日<div class="small">判定済み ${j.length}日</div></td><td class="n">${j.length?sgn(sum)+' kcal':'—'}</td><td class="n">${j.length?(sum>0?'+':sum<0?'−':'±')+fmt(Math.abs(sum)/7200,2)+' kg':'—'}</td></tr>`;
+  }).join('');
+  return `<table><tr><th>期間（${esc(dlabel(ui.date))}まで）</th><th class="n">累積差分</th><th class="n">体脂肪換算</th></tr>${rows}</table>
+    <div class="small">食事記録完了の日だけを合算（未完了・未記録・情報不足は除外）。体重換算は「7,200kcal≈1kg」の一般的な目安で、実際の体重変化とは一致しません。</div>`;
+}
+function anWeight(){
+  const N = 30, days = []; for (let i=N-1;i>=0;i--) days.push(Calc.addDays(ui.date,-i));
+  const W = Store.data.weights, raw = days.map(d=>W[d]??null);
+  if (!raw.some(v=>v!=null)) return '<div class="small">この期間の体重記録がありません。「日次記録」で体重を入力してください。</div>';
+  const ma = days.map((d,i) => { const v = []; for (let k=Math.max(0,i-6);k<=i;k++) if (raw[k]!=null) v.push(raw[k]); return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null; });
+  const all = [...raw,...ma].filter(v=>v!=null), lo = Math.min(...all)-0.5, hi = Math.max(...all)+0.5;
+  const Wd = 340, H = 140, px = i => 8 + i*(Wd-16)/(N-1), py = v => H-16 - (v-lo)/(hi-lo)*(H-32);
+  const line = arr => arr.map((v,i)=>v==null?null:`${px(i).toFixed(1)},${py(v).toFixed(1)}`).filter(Boolean).join(' ');
+  const dots = raw.map((v,i)=>v==null?'':`<circle cx="${px(i).toFixed(1)}" cy="${py(v).toFixed(1)}" r="3" fill="#8e8e93"/>`).join('');
+  const last = raw.map((v,i)=>v!=null?i:-1).filter(i=>i>=0).pop(), lastMa = ma[last];
+  const prevIdx = ma.map((v,i)=>v!=null&&i<=last-7?i:-1).filter(i=>i>=0).pop(), chg = prevIdx!=null ? lastMa-ma[prevIdx] : null;
+  return `<svg viewBox="0 0 ${Wd} ${H}" width="100%" role="img" aria-label="体重推移">
+    <text x="4" y="12" font-size="10" fill="#6c6c70">${fmt(hi,1)}kg</text><text x="4" y="${H-4}" font-size="10" fill="#6c6c70">${fmt(lo,1)}kg</text>
+    <polyline points="${line(ma)}" fill="none" stroke="#34c759" stroke-width="2.5" stroke-linejoin="round"/>${dots}</svg>
+    <div class="small">グレーの点=記録した体重、緑の線=7日移動平均（直近30日）</div>
+    <div class="stats" style="grid-template-columns:repeat(3,1fr)"><div><span>最新（${esc(dshort(days[last]))}）</span><b>${fmt(raw[last],1)}kg</b></div><div><span>7日平均</span><b>${fmt(lastMa,1)}kg</b></div><div><span>平均の7日前比</span><b>${chg==null?'—':(chg>0?'+':chg<0?'−':'±')+fmt(Math.abs(chg),1)+'kg'}</b></div></div>`;
+}
+function anLift(){
+  const dates = Object.keys(Store.data.days).sort(), names = {};
+  dates.forEach(d => Store.data.days[d].workouts.forEach(w => w.exercises.forEach(e => { const n = e.name.trim(); if (n) names[n] = d; })));
+  const list = Object.keys(names).sort((a,b)=>names[b].localeCompare(names[a]));
+  if (!list.length) return '<div class="small">種目の記録がありません。筋トレの種目（重量・回数・セット）を記録すると表示されます。</div>';
+  if (!list.includes(ui.lift)) ui.lift = list[0];
+  const rows = [];
+  dates.forEach(d => {
+    let max = 0, vol = 0, rm = 0, hit = false;
+    Store.data.days[d].workouts.forEach(w => w.exercises.filter(e=>e.name.trim()===ui.lift).forEach(e => { hit = true; max = Math.max(max,e.weightKg); vol += e.weightKg*e.reps*e.sets; rm = Math.max(rm, e.weightKg*(1+e.reps/30)); }));
+    if (hit) rows.push({d, max, vol, rm});
+  });
+  const shown = rows.slice(-12).reverse();
+  const arrow = (a,b) => b==null ? '' : a>b ? ' ▲' : a<b ? ' ▼' : ' ＝';
+  return `<label>種目</label><select data-f="lift" data-rerender>${list.map(n=>`<option ${n===ui.lift?'selected':''}>${esc(n)}</option>`).join('')}</select>
+    <table><tr><th>日付</th><th class="n">最大重量</th><th class="n">推定1RM</th><th class="n">ボリューム</th></tr>
+    ${shown.map((r,i)=>{ const p = shown[i+1]; return `<tr><td>${esc(dshort(r.d))}</td><td class="n">${fmt(r.max,1)}kg${arrow(r.max,p&&p.max)}</td><td class="n">${fmt(r.rm,1)}kg${arrow(r.rm,p&&p.rm)}</td><td class="n">${fmt(r.vol)}kg${arrow(r.vol,p&&p.vol)}</td></tr>`; }).join('')}</table>
+    <div class="small">最新12回分。ボリューム=重量×回数×セットの合計、推定1RM=重量×(1+回数/30)（Epley式・目安）。↑↓は前回比。種目名が完全一致するものを集計します。</div>`;
+}
 const LBL = s => (s==='provisional'||s==='insufficient') ? '' : SHORT[s];
 const dshort = s => { const d = Calc.parseDate(s); return `${d.getMonth()+1}/${d.getDate()}`; };
 const balanceOf = x => { const {cond}=Store.condFor(x); return Calc.dayBalance(x, Store.getDay(x), cond); };
@@ -616,6 +668,7 @@ const posNum = (v, label, {min=0, max=Infinity, req=true, gt0=false}={}) => {
 const actions = {
   tab(el){ ui.tab = el.dataset.id; },
   dview(el){ ui.dview = el.dataset.id; },
+  aview(el){ ui.aview = el.dataset.id; },
   pick(el){ ui.date = el.dataset.id; },
   'cal-prev'(){ const [y,m]=ui.calMonth.split('-').map(Number); const d=new Date(y,m-2,1); ui.calMonth=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); },
   'cal-next'(){ const [y,m]=ui.calMonth.split('-').map(Number); const d=new Date(y,m,1); ui.calMonth=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); },
