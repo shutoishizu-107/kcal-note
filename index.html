@@ -46,8 +46,29 @@ tr.sum td{font-weight:700}
 .err{background:#fee2e2;border-color:#fca5a5}
 .item{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
 .item .acts{display:flex;gap:4px;flex-shrink:0;align-items:flex-start}
-.chart{display:flex;gap:4px}
-.col{flex:1;text-align:center;font-size:.72rem;min-width:0}
+.chart{display:flex;gap:2px;overflow-x:auto;padding-bottom:6px}
+.col{flex:1 0 46px;text-align:center;font-size:.7rem;min-width:46px;background:transparent;border-radius:8px;padding:4px 0;color:var(--tx);font-weight:400;display:flex;flex-direction:column;gap:2px}
+.col.sel{background:#e8f7ec;box-shadow:inset 0 0 0 2px var(--pri-bg)}
+.col .dt{color:var(--sub);font-size:.68rem}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0 4px}
+.tile{background:#f2f2f7;border-radius:12px;padding:10px 12px}
+.tile span{display:block;font-size:.78rem;color:var(--sub)}
+.tile b{font-size:1.5rem;font-weight:700}.tile small{color:var(--sub);margin-left:3px}
+.seg{display:flex;background:#f2f2f7;border-radius:10px;padding:2px;margin:8px 0}
+.seg button{flex:1;background:transparent;color:var(--sub);padding:6px;border-radius:8px;font-size:.9rem}
+.seg button.on{background:#fff;color:var(--tx);box-shadow:0 1px 3px rgba(0,0,0,.15)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:8px 0}
+.stats div{background:#f2f2f7;border-radius:10px;padding:6px;text-align:center}
+.stats span{display:block;font-size:.65rem;color:var(--sub)}.stats b{font-size:.95rem}
+.calnav{display:flex;align-items:center;justify-content:space-between;margin:6px 0}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.wd{text-align:center;font-size:.72rem;color:var(--sub)}
+.cc{min-height:62px;border-radius:8px;background:#f2f2f7;padding:3px 1px;text-align:center;font-size:.68rem;display:flex;flex-direction:column;align-items:center;gap:1px;color:var(--tx);font-weight:400}
+.cc.empty{background:transparent}
+.cc i{font-style:normal;color:var(--sub);font-size:.7rem}.cc b{font-size:.78rem}.cc span{font-size:.58rem;white-space:nowrap}
+.cc.sel{box-shadow:inset 0 0 0 2.5px var(--pri-bg)}.cc.tod i{color:var(--pri);font-weight:700;text-decoration:underline}
+.bg-over{background:#fdeee6}.bg-under{background:#e5f2fa}.bg-maintain{background:#e6f6ea}.bg-prov{background:#fff8e6}
+table td{padding:9px 4px}
 .bars{position:relative;height:150px;border-bottom:0}
 .bars::after{content:"";position:absolute;left:0;right:0;top:50%;border-top:1px solid var(--sub)}
 .bar{position:absolute;left:18%;right:18%;border-radius:3px}
@@ -288,7 +309,7 @@ const sgn = v => (v>0?'+':v<0?'−':'±') + fmt(Math.abs(v));
 const WD = ['日','月','火','水','木','金','土'];
 const dlabel = s => { const d = Calc.parseDate(s); return `${d.getMonth()+1}/${d.getDate()}(${WD[d.getDay()]})`; };
 
-const ui = {tab:'dash', date:Calc.today(), mform:null, wform:null, fform:null};
+const ui = {tab:'dash', date:Calc.today(), dview:'chart', range:14, calMonth:null, calFor:null, mform:null, wform:null, fform:null};
 const newMform = () => ({meal:'breakfast', foodId:'', mode:'amount', amount:'', manualName:'', manualKcal:'', note:'', editId:null});
 const newWform = () => ({editId:null, title:'', durationMin:'', intensity:'moderate', kcalOverride:'', note:'', exercises:[{name:'',weightKg:'',reps:'',sets:''}], source:'manual', externalId:null, importedAt:null});
 const newFform = () => ({editId:null, name:'', baseAmount:'', unit:'g', kcal:'', note:''});
@@ -316,36 +337,59 @@ function viewDash(){
       <div class="small">差分 = 摂取 − 推定総消費（許容幅 ±${fmt(cond.tol)}kcal 以内なら「ほぼ維持」）${b.status==='provisional'?'<br>食事記録が未完了のため、これまでの記録分のみの暫定値です。':''}</div>`;
   }
   const rows = b.status==='insufficient' ? '' : `
+    <div class="tiles"><div class="tile"><span>摂取${Store.getDay(d).mealsComplete?'':'（記録中）'}</span><b>${fmt(b.intake)}</b><small>kcal</small></div><div class="tile"><span>推定総消費</span><b>${fmt(b.total)}</b><small>kcal</small></div></div>
+    <h3>消費の内訳</h3>
     <table>
       <tr><td>推定基礎代謝 (BMR)</td><td class="n">${fmt(b.bmr)} kcal</td></tr>
       <tr><td>日常活動を含む推定消費<div class="small">BMR × ${b.pal}（筋トレ除く）</div></td><td class="n">${fmt(b.daily)} kcal</td></tr>
       <tr><td>筋トレによる追加消費<div class="small">安静分を除いた正味</div></td><td class="n">+${fmt(b.exercise)} kcal</td></tr>
       <tr class="sum"><td>1日の推定総消費</td><td class="n">${fmt(b.total)} kcal</td></tr>
-      <tr class="sum"><td>摂取カロリー${Store.getDay(d).mealsComplete?'':'（記録中）'}</td><td class="n">${fmt(b.intake)} kcal</td></tr>
     </table>`;
   const cinfo = b.status==='insufficient' ? '' : `<div class="small">計算条件: 体重 ${fmt(cond.weightKg,1)}kg・${esc(Calc.ACTIVITY.find(a=>a.id===cond.activityId).label)}・${locked?'この日に保存済みの条件':'現在の設定（記録すると保存されます）'}</div>`;
   return `${dateBar()}
     <div class="card"><h2>${esc(d)} の収支</h2>${head}${rows}${cinfo}
       <div class="note">消費カロリーと収支は推定値であり、実測値ではありません。</div></div>
-    <div class="card"><h2>直近7日間（差分）</h2>${chart()}
-      <div class="small">棒は差分（上=オーバー、下=アンダー）。破線枠は暫定、「未記録」は食事記録なし、「0」は完了済みで摂取0kcal。</div></div>`;
+    <div class="card"><h2>推移</h2>
+      <div class="seg">${[['chart','グラフ'],['cal','カレンダー']].map(([k,l])=>`<button data-act="dview" data-id="${k}" class="${ui.dview===k?'on':''}">${l}</button>`).join('')}</div>
+      ${ui.dview==='cal' ? calendar() : `<div class="seg">${[7,14,30].map(n=>`<button data-act="range" data-id="${n}" class="${ui.range===n?'on':''}">${n}日</button>`).join('')}</div>${chart()}
+      <div class="small">棒は差分（上=オーバー、下=アンダー）。破線枠は暫定。“—”は未記録・情報不足で、0kcalとは区別しています。横にスワイプで過去を見られます。</div>`}</div>`;
+}
+const SHORT = {over:'オーバー',under:'アンダー',maintain:'維持',provisional:'暫定',unrecorded:'未記録',insufficient:'情報不足'};
+const LBL = s => (s==='provisional'||s==='insufficient') ? '' : SHORT[s];
+const dshort = s => { const d = Calc.parseDate(s); return `${d.getMonth()+1}/${d.getDate()}`; };
+const balanceOf = x => { const {cond}=Store.condFor(x); return Calc.dayBalance(x, Store.getDay(x), cond); };
+function stats(bs){
+  const j = bs.filter(b=>['over','under','maintain'].includes(b.status));
+  const cnt = s => bs.filter(b=>b.status===s).length;
+  const avg = j.length ? j.reduce((s,b)=>s+b.diff,0)/j.length : null;
+  return `<div class="stats"><div><span>平均差分（完了日）</span><b>${avg==null?'—':sgn(avg)}</b></div><div><span>オーバー</span><b>${cnt('over')}日</b></div><div><span>維持</span><b>${cnt('maintain')}日</b></div><div><span>アンダー</span><b>${cnt('under')}日</b></div></div>`;
 }
 function chart(){
-  const days = []; for (let i=6;i>=0;i--) days.push(Calc.addDays(ui.date,-i));
-  const bs = days.map(x => { const {cond}=Store.condFor(x); return Calc.dayBalance(x, Store.getDay(x), cond); });
+  const n = ui.range, days = []; for (let i=n-1;i>=0;i--) days.push(Calc.addDays(ui.date,-i));
+  const bs = days.map(balanceOf);
   const max = Math.max(300, ...bs.map(b=>b.diff==null?0:Math.abs(b.diff)));
-  return '<div class="chart">' + bs.map((b,i) => {
+  return stats(bs) + '<div class="chart">' + bs.map((b,i) => {
     const st = STATUS[b.status]; let bar='', txt;
     if (b.diff!=null && b.status!=='unrecorded') {
       const h = Math.max(2, Math.abs(b.diff)/max*50), up = b.diff>0, cls = b.status==='provisional' ? 'prov '+(up?'over':'under') : b.status;
       bar = `<div class="bar ${cls}" style="${up?'bottom':'top'}:50%;height:${h}%;${b.status==='provisional'?'color:'+(up?'var(--over)':'var(--under)'):''}"></div>`;
     }
-    if (b.status==='unrecorded' || b.status==='insufficient') bar = `<div class="mark">${b.status==='unrecorded'?'未記録':'情報不足'}</div>`;
-    txt = b.status==='insufficient' ? '—' : b.status==='unrecorded' ? '—' : sgn(b.diff);
-    const short = {over:'オーバー',under:'アンダー',maintain:'維持',provisional:'暫定',unrecorded:'未記録',insufficient:'不足'}[b.status];
-    const intake = (b.status==='unrecorded'||b.status==='insufficient') && !b.mealCount ? '摂取 —' : '摂取 '+fmt(b.intake);
-    return `<div class="col"><div class="bars">${bar}</div><b class="${st.c}">${txt}</b><span class="${st.c}">${short}</span><br>${dlabel(days[i])}<br><span class="small">${intake}</span></div>`;
+    txt = b.diff==null || b.status==='unrecorded' ? '—' : sgn(b.diff);
+    return `<button class="col ${days[i]===ui.date?'sel':''}" data-act="pick" data-id="${days[i]}"><div class="bars">${bar}</div><b class="${st.c}">${txt}</b><span class="${st.c}">${LBL(b.status)}</span><span class="dt">${dshort(days[i])}</span></button>`;
   }).join('') + '</div>';
+}
+function calendar(){
+  if (ui.calFor !== ui.date) { ui.calMonth = ui.date.slice(0,7); ui.calFor = ui.date; }
+  const [y, m] = ui.calMonth.split('-').map(Number), lead = new Date(y, m-1, 1).getDay(), last = new Date(y, m, 0).getDate();
+  const cells = Array(lead).fill('<div class="cc empty"></div>'), bs = [];
+  for (let i=1;i<=last;i++) {
+    const d = `${y}-${String(m).padStart(2,'0')}-${String(i).padStart(2,'0')}`, b = balanceOf(d); bs.push(b);
+    const st = STATUS[b.status], txt = b.diff==null || b.status==='unrecorded' ? '—' : sgn(b.diff);
+    cells.push(`<button class="cc bg-${st.c} ${d===ui.date?'sel':''} ${d===Calc.today()?'tod':''}" data-act="pick" data-id="${d}"><i>${i}</i><b class="${st.c}">${txt}</b><span class="${st.c}">${LBL(b.status)}</span></button>`);
+  }
+  return `<div class="calnav"><button data-act="cal-prev" aria-label="前月">◀</button><b>${y}年${m}月</b><button data-act="cal-next" aria-label="翌月">▶</button></div>
+    ${stats(bs)}<div class="cal">${WD.map(w=>`<div class="wd">${w}</div>`).join('')}${cells.join('')}</div>
+    <div class="small">各日の数字は差分(kcal)。タップでその日を選択します。縦線なしの枠=今日、太枠=選択中。</div>`;
 }
 function dateBar(){
   return `<div class="datebar"><button data-act="date-prev" aria-label="前日">◀</button><input type="date" data-f="date" value="${esc(ui.date)}"><button data-act="date-next" aria-label="翌日">▶</button><button data-act="today">今日</button></div>`;
@@ -506,6 +550,7 @@ function render(){
   const v = {dash:viewDash, daily:viewDaily, master:viewMaster, settings:viewSettings}[ui.tab];
   document.getElementById('app').innerHTML = (Store.memoryOnly?'<div class="note err">この環境では保存できません。バックアップを取ってください。</div>':'') + v();
   updatePreview();
+  const ch = document.querySelector('.chart'); if (ch) ch.scrollLeft = ch.scrollWidth;
 }
 function setPath(path, value){
   const p = path.split('.'); let o = ui; for (let i=0;i<p.length-1;i++) o = o[p[i]]; o[p[p.length-1]] = value;
@@ -568,6 +613,11 @@ const posNum = (v, label, {min=0, max=Infinity, req=true, gt0=false}={}) => {
 
 const actions = {
   tab(el){ ui.tab = el.dataset.id; },
+  dview(el){ ui.dview = el.dataset.id; },
+  range(el){ ui.range = +el.dataset.id; },
+  pick(el){ ui.date = el.dataset.id; },
+  'cal-prev'(){ const [y,m]=ui.calMonth.split('-').map(Number); const d=new Date(y,m-2,1); ui.calMonth=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); },
+  'cal-next'(){ const [y,m]=ui.calMonth.split('-').map(Number); const d=new Date(y,m,1); ui.calMonth=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); },
   'date-prev'(){ ui.date = Calc.addDays(ui.date,-1); }, 'date-next'(){ ui.date = Calc.addDays(ui.date,1); }, today(){ ui.date = Calc.today(); },
   'save-weight'(){
     const v = document.getElementById('wt').value, d = ui.date;
