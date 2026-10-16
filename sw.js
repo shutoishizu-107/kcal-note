@@ -1,4 +1,4 @@
-const CACHE = 'kcal-note-v1';
+const CACHE = 'kcal-note-v2';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -7,14 +7,11 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
-// 表示はキャッシュ優先、裏で最新版を取得して次回起動時に反映
+// ネットワーク優先で常に最新を取得し、オフライン時だけキャッシュを使う
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
-  e.respondWith(caches.match(e.request, {ignoreSearch: true}).then(hit => {
-    const net = fetch(e.request).then(res => {
-      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
-      return res;
-    }).catch(() => hit);
-    return hit || net;
-  }));
+  e.respondWith(fetch(e.request, {cache: 'no-cache'}).then(res => {
+    if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
+    return res;
+  }).catch(() => caches.match(e.request, {ignoreSearch: true})));
 });
