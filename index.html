@@ -23,6 +23,7 @@ label{display:block;font-size:.85rem;color:var(--sub);margin:8px 0 2px}
 input,select,textarea,button{font:inherit;font-size:16px}
 input,select,textarea{width:100%;padding:10px 12px;border:0;border-radius:10px;background:#f2f2f7;color:var(--tx)}
 input:focus,select:focus{outline:2px solid var(--pri-bg)}
+input[type=date]{display:block;min-width:0;max-width:100%;min-height:42px;-webkit-appearance:none;appearance:none;text-align:left}
 .row{display:flex;gap:8px}.row>*{flex:1;min-width:0}
 button{border:0;background:#e8f7ec;border-radius:10px;padding:10px 14px;color:var(--pri);font-weight:600;cursor:pointer}
 button:active{opacity:.6}
@@ -92,6 +93,9 @@ pre{white-space:pre-wrap;font-size:.8rem;background:#f1f5f9;padding:8px;border-r
 #report h1{font-size:1.3rem;margin:0 0 4px}#report h2{font-size:1.05rem;margin:16px 0 6px;border-bottom:2px solid #34c759;padding-bottom:2px}
 #report table{font-size:.78rem}#report th,#report td{border:1px solid #bbb;padding:3px 5px;text-align:left}#report td.n,#report th.n{text-align:right}
 #report th{background:#eaf7ee}
+#report .tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+#report .tw td,#report .tw th{white-space:nowrap}
+@media (max-width:480px){#report .tw table{font-size:.66rem}#report .tw th,#report .tw td{padding:3px 2px}#report .hm{display:none}}
 #report .kv{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;font-size:.85rem}
 #report .dd{font-size:.8rem;margin:0 0 6px;break-inside:avoid;overflow-wrap:anywhere}
 @media print{
@@ -101,6 +105,7 @@ pre{white-space:pre-wrap;font-size:.8rem;background:#f1f5f9;padding:8px;border-r
   #report{position:static;overflow:visible;padding:0;display:block!important}
   .rbar{display:none}
   tr{break-inside:avoid}
+  #report .hm{display:table-cell!important}
 }
 </style>
 </head>
@@ -658,8 +663,8 @@ function buildReport(){
     <h2>計算条件</h2><div class="kv">${rep.body && last.heightCm ? kv('身長 / 性別 / 年齢', `${fmt(last.heightCm,1)}cm / ${last.sex==='male'?'男性':last.sex==='female'?'女性':'—'} / ${last.birthDate?Calc.ageOn(last.birthDate,to)+'歳':'—'}`) : ''}
     ${kv('日常活動レベル', act?`${act.label}（×${act.pal}、筋トレを含まない）`:'未設定')}${kv('「ほぼ維持」の許容幅', '±'+fmt(last.tol)+' kcal')}
     ${kv('基礎代謝', 'Mifflin-St Jeor式')}${kv('筋トレ消費', '(MET−1)×体重×時間（Compendium 2024）、手入力あれば優先')}</div>
-    <h2>日別データ</h2><table><tr><th>日付</th>${rep.body?'<th class="n">体重</th>':''}<th class="n">摂取</th><th class="n">基礎代謝</th><th class="n">日常活動込</th><th class="n">筋トレ</th><th class="n">総消費</th><th class="n">差分</th><th>判定</th></tr>
-    ${rows.map(r=>{ const b=r.b, ok=b.status!=='insufficient'; return `<tr><td>${esc(dlabel(r.d))}</td>${rep.body?`<td class="n">${r.cond.weightKg?fmt(r.cond.weightKg,1):'—'}</td>`:''}<td class="n">${b.mealCount||r.day.mealsComplete?fmt(b.intake):'—'}</td><td class="n">${ok?fmt(b.bmr):'—'}</td><td class="n">${ok?fmt(b.daily):'—'}</td><td class="n">${ok?fmt(b.exercise):'—'}</td><td class="n">${ok?fmt(b.total):'—'}</td><td class="n">${b.diff!=null&&b.status!=='unrecorded'?sgn(b.diff):'—'}</td><td>${STX[b.status]}</td></tr>`; }).join('')}</table>
+    <h2>日別データ</h2><div class="tw"><table><tr><th>日付</th>${rep.body?'<th class="n">体重</th>':''}<th class="n">摂取</th><th class="n hm">基礎代謝</th><th class="n hm">日常活動込</th><th class="n">筋トレ</th><th class="n">総消費</th><th class="n">差分</th><th>判定</th></tr>
+    ${rows.map(r=>{ const b=r.b, ok=b.status!=='insufficient'; return `<tr><td>${esc(dshort(r.d))}</td>${rep.body?`<td class="n">${r.cond.weightKg?fmt(r.cond.weightKg,1):'—'}</td>`:''}<td class="n">${b.mealCount||r.day.mealsComplete?fmt(b.intake):'—'}</td><td class="n hm">${ok?fmt(b.bmr):'—'}</td><td class="n hm">${ok?fmt(b.daily):'—'}</td><td class="n">${ok?fmt(b.exercise):'—'}</td><td class="n">${ok?fmt(b.total):'—'}</td><td class="n">${b.diff!=null&&b.status!=='unrecorded'?sgn(b.diff):'—'}</td><td>${STX[b.status]}</td></tr>`; }).join('')}</table></div>
     <div class="small">単位: kcal。「—」は値なし（0ではありません）。暫定=食事記録が未完了で確定していない日。記録のない日は表から省略しています。</div>`;
   if (rep.detail) {
     const dd = rows.filter(r=>r.day.meals.length||r.day.workouts.length);
