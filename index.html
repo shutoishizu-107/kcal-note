@@ -915,9 +915,10 @@ function viewDaily(){
       <div class="acts">${Store.data.foods.some(f=>f.id===x.foodId)?'':`<button class="sm" data-act="meal-to-master" data-id="${x.id}">マスタ登録</button>`}<button class="sm" data-act="meal-edit" data-id="${x.id}">編集</button><button class="sm danger" data-act="meal-del" data-id="${x.id}">削除</button></div></div>`).join('') : '<div class="small">記録なし</div>');
   }).join('');
 
-  const wf = ui.wform;
-  const wl = day.workouts.map(x => workoutItem(x, cond)).join('') || '<div class="small">筋トレなし</div>';
-  const it = Calc.INTENSITY.find(i=>i.id===wf.intensity);
+  const hevyWorkouts = day.workouts.filter(x=>x.source==='hevy');
+  const legacyWorkouts = day.workouts.filter(x=>x.source!=='hevy');
+  const hevyList = hevyWorkouts.map(x => workoutItem(x, cond)).join('');
+  const legacyList = legacyWorkouts.map(x => workoutItem(x, cond)).join('');
 
   return `${dateBar()}
   <div class="card"><h2>体重・食事記録の状態</h2>
@@ -945,22 +946,11 @@ function viewDaily(){
     <table><tr class="sum"><td>1日合計</td><td class="n">${fmt(b.intake)} kcal</td></tr></table>
   </div>
 
-  <div class="card"><h2>筋トレ</h2>
-    <h3>${wf.editId?'筋トレを編集':'筋トレを追加'}</h3>
-    <div class="note">消費カロリーは「セッション全体の所要時間×強度(MET)×体重」で推定します。重量・回数・セットは記録用で、計算には使いません（種目ごとの加算もしません）。所要時間は<b>開始〜終了の総時間（セット間休憩を含む）</b>を入力してください。</div>
-    <label>セッション名</label><input data-f="wform.title" value="${esc(wf.title)}" placeholder="例: 胸の日" maxlength="100">
-    <div class="row"><div><label>所要時間（分）</label><input type="number" inputmode="numeric" data-f="wform.durationMin" value="${esc(wf.durationMin)}"></div>
-    <div><label>運動強度</label><select data-f="wform.intensity" data-rerender>${Calc.INTENSITY.map(i=>`<option value="${i.id}" ${wf.intensity===i.id?'selected':''}>${i.label}（MET ${i.met}）</option>`).join('')}</select></div></div>
-    <div class="small">${esc(it.desc)}（Compendium ${it.code}）</div>
-    <h3>種目（記録用）</h3>
-    <datalist id="exnames">${Store.data.exercises.flatMap(e=>Ex.namesOf(e)).filter((v,i,a)=>a.indexOf(v)===i).slice(0,600).map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
-    <div class="small exrow"><span>種目名</span><span>kg</span><span>回</span><span>set</span><span></span></div>
-    ${wf.exercises.map((e,i)=>`<div class="exrow"><input data-f="wform.exercises.${i}.name" list="exnames" value="${esc(e.name)}" placeholder="ベンチプレス"><input type="number" inputmode="decimal" step="any" data-f="wform.exercises.${i}.weightKg" value="${esc(e.weightKg)}"><input type="number" inputmode="numeric" data-f="wform.exercises.${i}.reps" value="${esc(e.reps)}"><input type="number" inputmode="numeric" data-f="wform.exercises.${i}.sets" value="${esc(e.sets)}"><button class="sm danger" data-act="ex-del" data-i="${i}" aria-label="削除">×</button></div>`).join('')}
-    <div class="btns" style="margin-top:4px"><button class="sm" data-act="ex-add">＋ 種目を追加</button></div>
-    <label>消費カロリーの手入力・補正（任意・入力すると推定より優先）</label><input type="number" inputmode="decimal" step="any" data-f="wform.kcalOverride" value="${esc(wf.kcalOverride)}" placeholder="空欄なら推定式を使用">
-    <label>メモ（任意）</label><input data-f="wform.note" value="${esc(wf.note)}" maxlength="200">
-    <div class="btns"><button class="pri" data-act="w-save">${wf.editId?'更新':'追加'}</button>${wf.editId?'<button data-act="w-cancel">キャンセル</button>':''}</div>
-    <div style="margin-top:10px">${hevyAdjustForm()}${wl}</div>
+  <div class="card"><h2>筋トレ（Hevy）</h2>
+    <div class="note">トレーニング内容（種目・重量・回数・セット）はHevyで記録します。このアプリではHevyの記録を読み取り専用で表示します。変更したい場合は<b>Hevyで編集して再同期</b>してください。運動強度・消費kcal・補正メモだけは、このアプリで補正でき、再同期後も保持されます。</div>
+    ${hevyList || `<div class="small">この日のHevy記録はまだありません。${Api.available ? '設定画面でHevyの連携状態を確認して同期してください。' : '設定画面でブラウザ直接連携の接続テストを行ってください。'}</div>`}
+    ${hevyAdjustForm()}
+    ${legacyList ? `<details><summary>過去の手入力記録（${legacyWorkouts.length}件）</summary><div class="small" style="margin:8px 0">互換性のため表示・収支計算・バックアップには残ります。新規作成や編集はできません。</div>${legacyList}</details>` : ''}
     <table><tr class="sum"><td>筋トレ追加消費 合計</td><td class="n">${b.exercise==null?'—':fmt(b.exercise)+' kcal'}</td></tr></table>
   </div>
   <div class="card"><div class="small">計算条件の保存: 記録するとその日の体重・設定が保存され、後から設定を変えても過去日は変わりません。</div>
@@ -1414,11 +1404,12 @@ function workoutItem(x, cond){
   const kcalText = k.method==='none' ? `<b>未計算</b>（${missingKcal}。0kcalではなく収支に未算入）` : `${fmt(k.kcal)} kcal（${k.method==='manual'?'外部機器の推定値／手入力値':'セッション推定: MET '+x.metUsed+'×経過時間'}）`;
   const head = hevy ? `<b>${esc(x.title||'(名称なし)')}</b> <span class="tag ok">Hevy</span> <span class="small">${esc(HevySync.timeInTz(x.startTime, tz))}〜${esc(x.endTime?HevySync.timeInTz(x.endTime, tz):'')}（${esc(tz)}）・経過${fmt(x.durationMin,1)}分（休憩含む）${it?'・'+esc(it.label):''}</span>`
     : `<b>${esc(x.title||'(名称なし)')}</b> <span class="small">${fmt(x.durationMin)}分・${esc(it?it.label:'')}・MET ${x.metUsed}</span>`;
+  const actions = hevy ? `<button class="sm" data-act="w-edit" data-id="${x.id}">補正</button>` : '<span class="tag">過去の手入力記録</span>';
   return `<div class="item"><div>${head}<br>
     <span class="small">${x.exercises.map(e=>`${esc(e.name)} ${esc(setsText(e))}`).join(' / ')}</span><br>
     ${x.exercises.length?`<span class="small">種目別の推定方式（参考表示・合計には未加算）: ${x.exercises.map(e=>`${esc(e.name)}＝${esc(Ex.labelForRow(e, Store.data.exercises))}`).join(' / ')}</span><br>`:''}
     <span class="small">消費 ${kcalText}${x.source!=='manual'?' ・取込元:'+esc(x.source):''}${x.note?' ・ '+esc(x.note):''}</span></div>
-    <div class="acts"><button class="sm" data-act="w-edit" data-id="${x.id}">${hevy?'補正':'編集'}</button>${hevy?'':`<button class="sm danger" data-act="w-del" data-id="${x.id}">削除</button>`}</div></div>`;
+    <div class="acts">${actions}</div></div>`;
 }
 
 const TABS = [['dash','ダッシュボード'],['daily','日次記録'],['master','マスタ'],['settings','設定']];
