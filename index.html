@@ -1257,10 +1257,21 @@ const DirectHevy = {
     for (;;) {
       const query = new URLSearchParams({...params, page:String(page), pageSize:String(pageSize)});
       const data = await this.request(path + '?' + query.toString());
-      const items = data[key];
+      let items = data[key];
+      // events は空の場合にページ情報を省略することがあり、実装差で
+      // workouts / workout_events が返る場合もある。workouts は更新イベント化する。
+      if (key==='events' && !Array.isArray(items)) {
+        if (Array.isArray(data.workouts)) items = data.workouts.map(workout=>({type:'updated', workout}));
+        else if (Array.isArray(data.workout_events)) items = data.workout_events;
+        else if (Array.isArray(data.workoutEvents)) items = data.workoutEvents;
+        else if (data.data && Array.isArray(data.data.events)) items = data.data.events;
+      }
       let pc = data.page_count ?? data.pageCount;
       if (typeof pc==='string' && /^\d+$/.test(pc)) pc = +pc;
-      if (!Array.isArray(items) || !Number.isInteger(pc) || pc < 0) throw new Error(`${path}: ページング応答が不正です`);
+      if (!Array.isArray(items)) throw new Error(`${path}: ${key} 配列がありません`);
+      // 空の最終ページに page_count が無い応答は、追加ページが無いので安全に終了できる。
+      if (pc==null && items.length===0) return out;
+      if (!Number.isInteger(pc) || pc < 0) throw new Error(`${path}: ページング応答が不正です`);
       if (count===null) count=pc; else if (count!==pc) throw new Error(`${path}: ページ数が途中で変わりました`);
       out.push(...items);
       if (page >= count) return out;
