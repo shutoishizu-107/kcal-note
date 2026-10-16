@@ -1558,8 +1558,10 @@ const actions = {
     Store.data.settings.timezone = tz; Store.data.settings.hevyDefaultIntensity = it || null; persist(); toast('保存しました（以後の取り込みから適用）');
   },
   'hv-apply-default'(){
-    const it = Store.data.settings.hevyDefaultIntensity; if (!it) throw new Error('先に既定の運動強度を選び、保存してください');
-    if (!confirm('強度が未設定・手入力kcalなしのHevy記録すべてに、既定強度を適用します。過去の収支が変わります。よろしいですか？')) return;
+    const sel = document.getElementById('hv-int'), it = sel ? sel.value : Store.data.settings.hevyDefaultIntensity;
+    if (!it) throw new Error('既定の運動強度を選んでください');
+    if (!confirm('強度が未設定・手入力kcalなしのHevy記録すべてに、選択した強度を適用します。過去の収支が変わります。よろしいですか？')) return;
+    Store.data.settings.hevyDefaultIntensity = it;
     const n = HevySync.applyDefaultIntensity(Store.data, it, new Date().toISOString()); persist(); toast(n+'件に適用しました');
   },
   'refresh-cond'(){ if(!confirm('この日の計算条件（体重・身長・活動レベル・許容幅）を現在の設定で更新します。よろしいですか？')) return; Store.refreshCond(ui.date); persist(); toast('更新しました'); },
