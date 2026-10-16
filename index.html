@@ -6,6 +6,10 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#34c759">
+<meta name="apple-mobile-web-app-title" content="カロリー">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
 <title>カロリー収支ノート</title>
 <style>
 :root{--bg:#f2f2f7;--card:#fff;--tx:#1c1c1e;--sub:#6c6c70;--line:#e5e5ea;--pri:#248a3d;--pri-bg:#34c759;--over:#c2410c;--under:#0369a1;--ok:#15803d;--warn:#a16207}
@@ -712,6 +716,7 @@ document.addEventListener('input', e => {
 
 Store.load();
 render();
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
 </html>
