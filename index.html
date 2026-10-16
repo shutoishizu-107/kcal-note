@@ -240,7 +240,7 @@ const Store = (() => {
   let KEY = BASE_KEY;
   const SCHEMA = 1;
   const defaults = () => ({schemaVersion:SCHEMA, settings:{heightCm:null, sex:'', birthDate:'', activityId:'', tolerance:100, timezone:'Asia/Tokyo', hevyDefaultIntensity:null}, weights:{}, foods:[], exercises:[], days:{},
-    hevy:{seq:0, generation:null, accountKey:null, templatesAt:null, lastSyncAt:null}});
+    hevy:{seq:0, generation:null, accountKey:null, templatesAt:null, lastSyncAt:null, directCursor:null, directApiVerified:false}});
   let data = defaults();
   let memoryOnly = false;
 
@@ -265,7 +265,7 @@ const Store = (() => {
     if (!validTz(d.settings.timezone)) bad('タイムゾーンが不正です');
     if (d.settings.hevyDefaultIntensity && !Calc.INTENSITY.some(i=>i.id===d.settings.hevyDefaultIntensity)) bad('Hevy既定強度が不正です');
     const hv = o.hevy||{};
-    d.hevy = {seq:isNum(hv.seq)?hv.seq:0, generation:isNum(hv.generation)?hv.generation:null, accountKey:hv.accountKey?str(hv.accountKey,40):null, templatesAt:hv.templatesAt?str(hv.templatesAt,40):null, lastSyncAt:hv.lastSyncAt?str(hv.lastSyncAt,40):null};
+    d.hevy = {seq:isNum(hv.seq)?hv.seq:0, generation:isNum(hv.generation)?hv.generation:null, accountKey:hv.accountKey?str(hv.accountKey,40):null, templatesAt:hv.templatesAt?str(hv.templatesAt,40):null, lastSyncAt:hv.lastSyncAt?str(hv.lastSyncAt,40):null, directCursor:hv.directCursor?str(hv.directCursor,40):null, directApiVerified:hv.directApiVerified===true};
     for (const [k,v] of Object.entries(o.weights||{})) { if(!isDate(k)||!isNum(v,20,300)) bad('体重記録が不正です: '+k); d.weights[k]=v; }
     d.foods = (o.foods||[]).map(f => validateFood(f, bad));
     for (const [k,day] of Object.entries(o.days||{})) {
@@ -1205,7 +1205,7 @@ const Api = {
 // GitHub Pages 等の静的配信で行う、Hevy 公式APIへのブラウザ接続テスト。
 // APIキーはこのオブジェクト（ページを開いている間のメモリ）だけに保持する。
 const DirectHevy = {
-  key:'', testing:false, result:null, endpointResults:null,
+  key:'', testing:false, result:null, endpointResults:null, syncing:false, error:'', lastSummary:null,
   async request(path){
     const response = await fetch('https://api.hevyapp.com' + path, {
       method:'GET', mode:'cors', cache:'no-store', headers:{'api-key':this.key, 'Accept':'application/json'}
@@ -1224,7 +1224,7 @@ const DirectHevy = {
       // api-key ヘッダーにより、ブラウザは OPTIONS のプリフライト後に GET を行う。
       const data = await this.request('/v1/user/info');
       if (!data || !data.data || typeof data.data.id!=='string') throw new Error('Hevyのアカウント情報の形式が想定と異なります');
-      this.result = {ok:true, account:{name:typeof data.data.name==='string'?data.data.name:'', username:typeof data.data.username==='string'?data.data.username:''}};
+      this.result = {ok:true, accountId:data.data.id, account:{name:typeof data.data.name==='string'?data.data.name:'', username:typeof data.data.username==='string'?data.data.username:''}};
     } catch(e) {
       // CORS違反時はブラウザが詳細を開示しないため、ここにAPIキーや応答本文は出さない。
       this.result = {ok:false, message:e instanceof TypeError ? 'ブラウザがHevyへの通信を許可しませんでした（CORSまたはネットワークの問題）。開発者ツールのConsole/NetworkでOPTIONSとGETを確認してください。' : (e.message || '接続テストに失敗しました')};
@@ -1242,10 +1242,60 @@ const DirectHevy = {
       // 現行仕様の events と、実サービスで確認済みの workouts 応答を区別して記録する。
       const eventShape = Array.isArray(events.events) ? 'events' : Array.isArray(events.workouts) ? 'workouts（更新記録として扱う互換形式）' : null;
       if (!eventShape) throw new Error('/v1/workouts/events: events / workouts 配列がありません');
-      this.endpointResults = {ok:true, eventShape};
+      this.endpointResults = {ok:true, eventShape}; Store.data.hevy.directApiVerified = true; persist();
     } catch(e) {
       this.endpointResults = {ok:false, message:e instanceof TypeError ? 'ブラウザがHevyへの通信を許可しませんでした（CORSまたはネットワークの問題）。' : (e.message || 'エンドポイント検証に失敗しました')};
     } finally { this.testing = false; render(); }
+  },
+  async accountKey(){
+    const bytes = new TextEncoder().encode('hevy-account:' + this.result.accountId);
+    const hash = await crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('').slice(0,16);
+  },
+  async fetchPages(path, key, pageSize, params={}){
+    let page = 1, count = null, out = [];
+    for (;;) {
+      const query = new URLSearchParams({...params, page:String(page), pageSize:String(pageSize)});
+      const data = await this.request(path + '?' + query.toString());
+      const items = data[key];
+      let pc = data.page_count ?? data.pageCount;
+      if (typeof pc==='string' && /^\d+$/.test(pc)) pc = +pc;
+      if (!Array.isArray(items) || !Number.isInteger(pc) || pc < 0) throw new Error(`${path}: ページング応答が不正です`);
+      if (count===null) count=pc; else if (count!==pc) throw new Error(`${path}: ページ数が途中で変わりました`);
+      out.push(...items);
+      if (page >= count) return out;
+      if (++page > 5000) throw new Error(`${path}: ページ数が多すぎます`);
+    }
+  },
+  async sync(){
+    if (this.syncing || !this.result?.ok || !(this.endpointResults?.ok || Store.data.hevy.directApiVerified)) throw new Error('先に接続テストと追加検証を完了してください');
+    this.syncing = true; this.error = ''; render();
+    try {
+      const now = new Date(), nowIso = now.toISOString(), accountKey = await this.accountKey(), H = Store.data.hevy;
+      if (H.accountKey && H.accountKey !== accountKey) {
+        if (confirm('連携先のHevyアカウントが以前と異なります。OKで以前のHevy記録をこの端末から削除します。キャンセルで別アカウントの記録として保持します。')) HevySync.purge(Store.data, H.accountKey);
+        H.accountKey = accountKey; H.directCursor = null; H.templatesAt = null;
+      }
+      H.accountKey = accountKey;
+      let changes, mode;
+      if (!H.directCursor) {
+        const workouts = await this.fetchPages('/v1/workouts', 'workouts', 10);
+        changes = workouts.map(w=>({kind:'upsert', workoutId:w.id, workout:w})); mode = 'initial';
+      } else {
+        const since = new Date(Math.max(0, Date.parse(H.directCursor) - 60000)).toISOString();
+        const events = await this.fetchPages('/v1/workouts/events', 'events', 10, {since});
+        changes = events.filter(e=>e && typeof e==='object').map(e=>e.type==='deleted' ? {kind:'delete', workoutId:e.id} : {kind:'upsert', workoutId:e.workout&&e.workout.id, workout:e.workout}).filter(e=>typeof e.workoutId==='string' && e.workoutId);
+        mode = 'incremental';
+      }
+      const result = HevySync.applyChanges(Store.data, changes, {accountKey, tz:Store.data.settings.timezone, defaultIntensity:Store.data.settings.hevyDefaultIntensity, uid:Store.uid, nowIso, onDate:date=>Store.lockCond(date)});
+      if (!H.templatesAt || now - new Date(H.templatesAt) > 12*60*60*1000) {
+        const templates = await this.fetchPages('/v1/exercise_templates', 'exercise_templates', 100);
+        const f = HevySync.templatesToFile(templates, accountKey, nowIso), parsed = Ex.parseFile(f), plan = Ex.planImport(parsed, Store.data.exercises);
+        Ex.applyImport(plan, Store.data.exercises, Store.uid, nowIso); H.templatesAt = nowIso;
+      }
+      H.directCursor = nowIso; H.lastSyncAt = nowIso; persist(); this.lastSummary = {mode, ...result};
+    } catch(e) { this.error = e.message || '同期に失敗しました'; }
+    finally { this.syncing = false; render(); }
   }
 };
 
@@ -1334,14 +1384,23 @@ async function authSubmit(path, extra){
 function hevyCard(){
   const card = (inner) => `<div class="card"><h2>Hevy連携</h2>${inner}</div>`;
   if (!Api.available) {
-    const r = DirectHevy.result;
+    const r = DirectHevy.result, directReady = !!(DirectHevy.endpointResults?.ok || Store.data.hevy.directApiVerified);
     return card(`<div class="note"><b>ブラウザ直接連携の接続テスト</b>（GitHub PagesなどHTTPSの静的配信専用）</div>
       <div class="small">Hevy公式APIへのブラウザ通信で、CORSのプリフライトと <code>GET /v1/user/info</code> を検証します。この段階では同期・取得・保存は行いません。</div>
       <label>Hevy APIキー</label><input id="hv-direct-key" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(DirectHevy.key)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
       <div class="btns"><button class="pri" data-act="hv-direct-test" ${DirectHevy.testing?'disabled':''}>${DirectHevy.testing?'接続テスト中...':'接続テスト'}</button></div>
       ${r ? (r.ok ? `<div class="note">接続成功: <b>${esc(r.account.name||r.account.username||'Hevyアカウント')}</b>${r.account.username?'（'+esc(r.account.username)+'）':''}<br>このGitHub Pagesのオリジンから、CORSプリフライトと本リクエストが成功しました。</div>
         <div class="btns"><button data-act="hv-direct-endpoints" ${DirectHevy.testing?'disabled':''}>種目・ワークアウト・差分イベントを検証</button></div>` : `<div class="note err">接続失敗: ${esc(r.message)}</div>`) : ''}
-      ${DirectHevy.endpointResults ? (DirectHevy.endpointResults.ok ? `<div class="note">追加検証に成功しました: 種目一覧・ワークアウト・差分イベントを同じブラウザ通信元で取得できました。イベント形式: ${esc(DirectHevy.endpointResults.eventShape)}</div>` : `<div class="note err">追加検証に失敗: ${esc(DirectHevy.endpointResults.message)}</div>`) : ''}
+      ${r&&r.ok&&directReady ? `<div class="note">追加検証に成功しました。種目一覧・ワークアウト・差分イベントのブラウザ通信を確認済みです。${DirectHevy.endpointResults?.eventShape?' イベント形式: '+esc(DirectHevy.endpointResults.eventShape):''}</div>
+        <h3>ブラウザ直接連携</h3>
+        ${DirectHevy.error?`<div class="note err">同期エラー: ${esc(DirectHevy.error)}<br>取得済みの記録は保持されています。</div>`:''}
+        ${DirectHevy.lastSummary?`<div class="small">直近の結果: ${DirectHevy.lastSummary.mode==='initial'?'初回取り込み':'差分同期'}・追加${DirectHevy.lastSummary.added}・更新${DirectHevy.lastSummary.updated}・削除${DirectHevy.lastSummary.deleted}</div>`:''}
+        <div class="btns"><button class="pri" data-act="hv-direct-sync" ${DirectHevy.syncing?'disabled':''}>${DirectHevy.syncing?'同期中...':'今すぐ同期'}</button></div>
+        <label>集計タイムゾーン</label><input id="hv-tz" list="tzlist" value="${esc(Store.data.settings.timezone)}" autocapitalize="off"><datalist id="tzlist"><option>Asia/Tokyo</option><option>UTC</option><option>America/New_York</option><option>Europe/London</option></datalist>
+        <label>取り込み時の既定の運動強度</label><select id="hv-int"><option value="">未設定（強度を選ぶまで「未計算」）</option>${Calc.INTENSITY.map(i=>`<option value="${i.id}" ${Store.data.settings.hevyDefaultIntensity===i.id?'selected':''}>${i.label}（MET ${i.met}）</option>`).join('')}</select>
+        <div class="btns"><button data-act="hv-save-prefs">設定を保存</button><button data-act="hv-apply-default">未計算のHevy記録に既定強度を適用</button></div>
+        <div class="small">キーは再読み込みまでのメモリだけに保持します。同期カーソル、取り込み済み記録、補正値はこの端末のブラウザ保存領域に保存されます。ブラウザ内のスクリプトから読み取れるため、サーバー側の秘密保管と同等ではありません。</div>` : ''}
+      ${DirectHevy.endpointResults&&!DirectHevy.endpointResults.ok ? `<div class="note err">追加検証に失敗: ${esc(DirectHevy.endpointResults.message)}</div>` : ''}
       <div class="small">キーはページを閉じる・再読み込みするまでのメモリにだけ置きます。端末保存、サーバー送信、ログ出力、Gitへの書き込みはしません。</div>`);
   }
   const st = Hevy.st, s = Store.data.settings, H = Store.data.hevy;
@@ -1585,6 +1644,7 @@ const actions = {
   },
   async 'hv-direct-test'(){ await DirectHevy.test(); },
   async 'hv-direct-endpoints'(){ await DirectHevy.testEndpoints(); },
+  async 'hv-direct-sync'(){ await DirectHevy.sync(); },
   'auth-login'(){ authSubmit('/api/login', {}); return 'noRender'; },
   'auth-accept'(){ authSubmit('/api/invite/accept', {token:ui.inviteToken}); return 'noRender'; },
   async logout(){ await Api.call('POST', '/api/logout', {}); location.href = '/'; },
