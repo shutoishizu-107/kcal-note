@@ -86,12 +86,29 @@ details{margin:6px 0}summary{cursor:pointer;font-weight:600}
 pre{white-space:pre-wrap;font-size:.8rem;background:#f1f5f9;padding:8px;border-radius:8px}
 .exrow{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:4px;margin:4px 0}
 .exrow input{padding:7px 4px}
+#report{display:none;position:fixed;inset:0;background:#fff;overflow:auto;z-index:20;padding:calc(12px + env(safe-area-inset-top)) 14px 40px;color:#000}
+#report.on{display:block}
+.rbar{display:flex;gap:8px;margin-bottom:12px;position:sticky;top:0;background:#fff;padding:6px 0}
+#report h1{font-size:1.3rem;margin:0 0 4px}#report h2{font-size:1.05rem;margin:16px 0 6px;border-bottom:2px solid #34c759;padding-bottom:2px}
+#report table{font-size:.78rem}#report th,#report td{border:1px solid #bbb;padding:3px 5px;text-align:left}#report td.n,#report th.n{text-align:right}
+#report th{background:#eaf7ee}
+#report .kv{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;font-size:.85rem}
+#report .dd{font-size:.8rem;margin:0 0 6px;break-inside:avoid;overflow-wrap:anywhere}
+@media print{
+  @page{margin:12mm}
+  body>*:not(#report){display:none!important}
+  body{padding:0;background:#fff}
+  #report{position:static;overflow:visible;padding:0;display:block!important}
+  .rbar{display:none}
+  tr{break-inside:avoid}
+}
 </style>
 </head>
 <body>
 <main id="app"></main>
 <nav id="nav"></nav>
 <div id="toast" role="status"></div>
+<div id="report"></div>
 
 <!-- ============ 計算モジュール（DOM・保存に依存しない純粋関数） ============ -->
 <script id="calc-js">
@@ -311,7 +328,7 @@ const sgn = v => (v>0?'+':v<0?'−':'±') + fmt(Math.abs(v));
 const WD = ['日','月','火','水','木','金','土'];
 const dlabel = s => { const d = Calc.parseDate(s); return `${d.getMonth()+1}/${d.getDate()}(${WD[d.getDay()]})`; };
 
-const ui = {tab:'dash', date:Calc.today(), dview:'chart', aview:'bal', lift:'', range:7, calMonth:null, calFor:null, mform:null, wform:null, fform:null};
+const ui = {tab:'dash', date:Calc.today(), dview:'chart', aview:'bal', lift:'', rep:{period:'30', detail:true, body:true}, range:7, calMonth:null, calFor:null, mform:null, wform:null, fform:null};
 const newMform = () => ({meal:'breakfast', foodId:'', mode:'amount', amount:'', manualName:'', manualKcal:'', note:'', editId:null});
 const newWform = () => ({editId:null, title:'', durationMin:'', intensity:'moderate', kcalOverride:'', note:'', exercises:[{name:'',weightKg:'',reps:'',sets:''}], source:'manual', externalId:null, importedAt:null});
 const newFform = () => ({editId:null, name:'', baseAmount:'', unit:'g', kcal:'', note:''});
@@ -576,6 +593,13 @@ function viewSettings(){
     <input type="file" id="allfile" accept="application/json,.json" hidden>
     <div class="small">データはこの端末のブラウザ内にのみ保存されます。Safariのサイトデータ削除で消えるため、定期的にバックアップしてください。</div></div>
 
+  <div class="card"><h2>PDFサマリー（共有用）</h2>
+    <label>期間</label><select data-f="rep.period">${[['7','直近7日'],['14','直近14日'],['30','直近30日'],['month','今月'],['prev','先月'],['all','全期間（記録のある日のみ）']].map(([v,l])=>`<option value="${v}" ${ui.rep.period===v?'selected':''}>${l}</option>`).join('')}</select>
+    <div class="opt"><input type="checkbox" id="rep-detail" data-f="rep.detail" ${ui.rep.detail?'checked':''}><label for="rep-detail">食事・筋トレの詳細を含める</label></div>
+    <div class="opt"><input type="checkbox" id="rep-body" data-f="rep.body" ${ui.rep.body?'checked':''}><label for="rep-body">身体情報（身長・体重・年齢・性別）を含める<br><span class="small">外すとこれらは表示しません</span></label></div>
+    <div class="btns"><button class="pri" data-act="rep-open">プレビューを開く</button></div>
+    <div class="small">プレビュー画面の「PDF保存・印刷」で、端末の印刷メニューからPDFとして保存・共有できます（iPhoneは印刷プレビューを拡大→共有）。</div></div>
+
   <div class="card"><h2>CSV出力（分析用）</h2>
     <div class="btns" style="margin:0"><button data-act="csv" data-id="daily">日次サマリー</button><button data-act="csv" data-id="meals">食事記録</button><button data-act="csv" data-id="sessions">筋トレセッション</button><button data-act="csv" data-id="exercises">筋トレ種目</button></div>
     <div class="small">UTF-8(BOM付き)・全期間・1行目はヘッダー。日次サマリーはダッシュボードと同じ値（体重・基礎代謝・消費・摂取・差分・判定 status）です。status: over / under / maintain / provisional(暫定) / unrecorded(未記録) / insufficient(情報不足)。差分は摂取−推定総消費。空欄は「値なし」を表し0ではありません。筋トレの消費kcalはセッションCSVにのみあり、種目CSVとはsession_idで結合します（種目側にkcalは持たせず二重計上を防止）。</div></div>
@@ -598,6 +622,54 @@ function viewSettings(){
 }
 
 /* ---------- 描画・イベント ---------- */
+/* ---------- PDFサマリー（印刷用ビュー） ---------- */
+function repRange(){
+  const t = Calc.today(), p = ui.rep.period;
+  if (p==='month') return [t.slice(0,8)+'01', t];
+  if (p==='prev') { const [y,m] = t.split('-').map(Number); return [Calc.fmtDate(new Date(y,m-2,1)), Calc.fmtDate(new Date(y,m-1,0))]; }
+  if (p==='all') return [Csv.dates()[0]||t, t];
+  return [Calc.addDays(t, -(+p-1)), t];
+}
+function buildReport(){
+  const rep = ui.rep, [from, to] = repRange(); let dates = [];
+  for (let d=from; d<=to; d=Calc.addDays(d,1)) dates.push(d);
+  if (rep.period==='all') { const rec = new Set(Csv.dates()); dates = dates.filter(d=>rec.has(d)); }
+  const rows = dates.map(d => ({d, day:Store.getDay(d), b:balanceOf(d), cond:Store.condFor(d).cond}))
+    .filter(r => r.day.meals.length || r.day.workouts.length || r.day.mealsComplete || Store.data.weights[r.d]!=null);
+  const empty = dates.length - rows.length;
+  const j = rows.filter(r=>['over','under','maintain'].includes(r.b.status)), n = j.length;
+  const avg = f => n ? j.reduce((s,r)=>s+f(r),0)/n : null;
+  const cnt = s => rows.filter(r=>r.b.status===s).length;
+  const sessions = rows.reduce((s,r)=>s+r.day.workouts.length,0), mins = rows.reduce((s,r)=>s+r.day.workouts.reduce((a,w)=>a+w.durationMin,0),0);
+  const wk = rows.reduce((s,r)=>s+(r.b.exercise||0),0);
+  const ws = Object.keys(Store.data.weights).filter(d=>d>=from&&d<=to).sort();
+  const last = Store.condFor(to).cond, act = Calc.ACTIVITY.find(a=>a.id===last.activityId);
+  const kv = (k,v) => `<div>${esc(k)}</div><div><b>${esc(v)}</b></div>`;
+  const STX = {over:'オーバー',under:'アンダー',maintain:'ほぼ維持',provisional:'暫定',unrecorded:'未記録',insufficient:'情報不足'};
+  let h = `<div class="rbar"><button class="pri" data-act="rep-print">PDF保存・印刷</button><button data-act="rep-close">閉じる</button></div>
+    <h1>カロリー収支サマリー</h1><div class="small">期間: ${from} ～ ${to}（${dates.length}日）・作成日: ${Calc.today()}</div>
+    <div class="note">消費カロリーと収支は推定値であり、実測値ではありません。差分＝摂取−推定総消費（正=オーバー、負=アンダー）。平均・累積は「食事記録完了」の日（判定済み）のみを対象とし、未記録・暫定の日は除外しています。</div>
+    <h2>総括</h2><div class="kv">${kv('判定済み日数', n+'日')}${kv('オーバー / 維持 / アンダー', `${cnt('over')} / ${cnt('maintain')} / ${cnt('under')}日`)}
+    ${kv('平均摂取', n?fmt(avg(r=>r.b.intake))+' kcal':'—')}${kv('平均推定総消費', n?fmt(avg(r=>r.b.total))+' kcal':'—')}
+    ${kv('平均差分', n?sgn(avg(r=>r.b.diff))+' kcal':'—')}${kv('累積差分', n?sgn(j.reduce((s,r)=>s+r.b.diff,0))+' kcal':'—')}
+    ${kv('暫定の日 / 記録なしの日', `${cnt('provisional')} / ${empty}日`)}${kv('情報不足の日', cnt('insufficient')+'日')}
+    ${kv('筋トレ', `${sessions}回 / ${fmt(mins)}分 / 追加消費合計 ${fmt(wk)} kcal`)}
+    ${rep.body && ws.length ? kv('体重（期間内の記録）', `${fmt(Store.data.weights[ws[0]],1)} kg (${ws[0]}) → ${fmt(Store.data.weights[ws[ws.length-1]],1)} kg (${ws[ws.length-1]})`) : ''}</div>
+    <h2>計算条件</h2><div class="kv">${rep.body && last.heightCm ? kv('身長 / 性別 / 年齢', `${fmt(last.heightCm,1)}cm / ${last.sex==='male'?'男性':last.sex==='female'?'女性':'—'} / ${last.birthDate?Calc.ageOn(last.birthDate,to)+'歳':'—'}`) : ''}
+    ${kv('日常活動レベル', act?`${act.label}（×${act.pal}、筋トレを含まない）`:'未設定')}${kv('「ほぼ維持」の許容幅', '±'+fmt(last.tol)+' kcal')}
+    ${kv('基礎代謝', 'Mifflin-St Jeor式')}${kv('筋トレ消費', '(MET−1)×体重×時間（Compendium 2024）、手入力あれば優先')}</div>
+    <h2>日別データ</h2><table><tr><th>日付</th>${rep.body?'<th class="n">体重</th>':''}<th class="n">摂取</th><th class="n">基礎代謝</th><th class="n">日常活動込</th><th class="n">筋トレ</th><th class="n">総消費</th><th class="n">差分</th><th>判定</th></tr>
+    ${rows.map(r=>{ const b=r.b, ok=b.status!=='insufficient'; return `<tr><td>${esc(dlabel(r.d))}</td>${rep.body?`<td class="n">${r.cond.weightKg?fmt(r.cond.weightKg,1):'—'}</td>`:''}<td class="n">${b.mealCount||r.day.mealsComplete?fmt(b.intake):'—'}</td><td class="n">${ok?fmt(b.bmr):'—'}</td><td class="n">${ok?fmt(b.daily):'—'}</td><td class="n">${ok?fmt(b.exercise):'—'}</td><td class="n">${ok?fmt(b.total):'—'}</td><td class="n">${b.diff!=null&&b.status!=='unrecorded'?sgn(b.diff):'—'}</td><td>${STX[b.status]}</td></tr>`; }).join('')}</table>
+    <div class="small">単位: kcal。「—」は値なし（0ではありません）。暫定=食事記録が未完了で確定していない日。記録のない日は表から省略しています。</div>`;
+  if (rep.detail) {
+    const dd = rows.filter(r=>r.day.meals.length||r.day.workouts.length);
+    h += `<h2>食事・筋トレの詳細</h2>` + (dd.length ? dd.map(r => `<div class="dd"><b>${esc(dlabel(r.d))}</b>${r.day.mealsComplete?'':'（食事記録未完了）'}<br>
+      ${Calc.MEALS.map(m=>{ const it = r.day.meals.filter(x=>x.meal===m.id); return it.length ? `${m.label}: ${it.map(x=>`${esc(x.name)}${x.foodId?' '+fmt(x.amount,2)+esc(x.unit):''} ${fmt(x.kcal)}kcal`).join('、')}<br>` : ''; }).join('')}
+      ${r.day.workouts.map(w=>`筋トレ: ${esc(w.title||'(名称なし)')} ${fmt(w.durationMin)}分 強度${esc((Calc.INTENSITY.find(i=>i.id===w.intensity)||{}).label||'')} 消費${fmt(Calc.workoutKcal(w,r.cond.weightKg).kcal)}kcal${w.exercises.length?'（'+w.exercises.map(e=>`${esc(e.name)} ${e.weightKg}kg×${e.reps}×${e.sets}`).join('、')+'）':''}<br>`).join('')}</div>`).join('') : '<div class="small">記録なし</div>');
+  }
+  return h;
+}
+
 const TABS = [['dash','ダッシュボード'],['daily','日次記録'],['master','マスタ'],['settings','設定']];
 function render(){
   document.getElementById('nav').innerHTML = TABS.map(([k,l])=>`<button data-act="tab" data-id="${k}" class="${ui.tab===k?'on':''}">${l}</button>`).join('');
@@ -776,6 +848,9 @@ const actions = {
     persist(); toast('設定を保存しました');
   },
   'export-all'(){ download('kcal-backup-'+Calc.today()+'.json', Store.exportAll()); },
+  'rep-open'(){ const r = document.getElementById('report'); r.innerHTML = buildReport(); r.classList.add('on'); r.scrollTop = 0; return 'noRender'; },
+  'rep-print'(){ window.print(); return 'noRender'; },
+  'rep-close'(){ document.getElementById('report').classList.remove('on'); return 'noRender'; },
   'csv'(el){ const k = el.dataset.id; download(`kcal-${k}-${Calc.today()}.csv`, Csv[k](), 'text/csv'); return 'noRender'; },
   'import-all'(){ document.getElementById('allfile').click(); return 'noRender'; },
   reset(){ if(!confirm('全データを削除します。元に戻せません。よろしいですか？')) return; if(!confirm('本当に削除しますか？（先にバックアップ推奨）')) return; Store.replaceAll(Store.defaults()); ui.mform=newMform(); ui.wform=newWform(); ui.fform=newFform(); toast('削除しました'); },
@@ -815,7 +890,7 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('input', e => {
   const t = e.target; if (!t.dataset.f || t.dataset.f==='date' || t.dataset.rerender!==undefined) return;
-  setPath(t.dataset.f, t.value); if (t.dataset.f.startsWith('mform.')) updatePreview();
+  setPath(t.dataset.f, t.type==='checkbox' ? t.checked : t.value); if (t.dataset.f.startsWith('mform.')) updatePreview();
 });
 
 Store.load();
