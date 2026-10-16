@@ -87,6 +87,9 @@ details{margin:6px 0}summary{cursor:pointer;font-weight:600}
 pre{white-space:pre-wrap;font-size:.8rem;background:#f1f5f9;padding:8px;border-radius:8px}
 .exrow{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:4px;margin:4px 0}
 .exrow input{padding:7px 4px}
+#auth{display:none;position:fixed;inset:0;background:var(--bg);z-index:30;overflow:auto;padding:calc(16px + env(safe-area-inset-top)) 16px 24px}
+#auth.on{display:block}
+button:disabled{opacity:.4;cursor:not-allowed}
 .tag{display:inline-block;font-size:.7rem;padding:1px 8px;border-radius:99px;background:#eee;color:#444;margin:2px 4px 0 0}
 .tag.ok{background:#e6f6ea;color:#1b6e34}.tag.warn{background:#fff3d6;color:#8a5a00}
 #report{display:none;position:fixed;inset:0;background:#fff;overflow:auto;z-index:20;padding:calc(12px + env(safe-area-inset-top)) 14px 40px;color:#000}
@@ -116,6 +119,7 @@ pre{white-space:pre-wrap;font-size:.8rem;background:#f1f5f9;padding:8px;border-r
 <nav id="nav"></nav>
 <div id="toast" role="status"></div>
 <div id="report"></div>
+<div id="auth"></div>
 
 <!-- ============ 計算モジュール（DOM・保存に依存しない純粋関数） ============ -->
 <script id="calc-js">
@@ -175,12 +179,13 @@ const Calc = (() => {
     const meals = day.meals||[], workouts = day.workouts||[];
     const intake = meals.reduce((s,m)=>s+m.kcal,0);
     const missing = missingFields(cond, date);
-    const out = {intake, mealCount:meals.length, missing, status:'', diff:null, bmr:null, daily:null, exercise:null, total:null, tol:cond?cond.tol:null};
+    const out = {intake, mealCount:meals.length, missing, status:'', diff:null, bmr:null, daily:null, exercise:null, exerciseUncalculated:0, total:null, tol:cond?cond.tol:null};
     if (missing.length){ out.status='insufficient'; return out; }
     const b = bmr({weightKg:cond.weightKg, heightCm:cond.heightCm, age:ageOn(cond.birthDate,date), sex:cond.sex});
     const pal = ACTIVITY.find(x=>x.id===cond.activityId).pal;
     out.pal = pal; out.bmr = b; out.daily = b*pal;
     out.exercise = workouts.reduce((s,w)=>s+workoutKcal(w,cond.weightKg).kcal,0);
+    out.exerciseUncalculated = workouts.filter(w=>workoutKcal(w,cond.weightKg).method==='none').length; // 0kcalとは区別し、未算入として扱う
     out.total = out.daily + out.exercise;
     out.diff = intake - out.total;
     if (!day.mealsComplete) out.status = meals.length ? 'provisional' : 'unrecorded';
@@ -222,9 +227,11 @@ const Calc = (() => {
 <!-- ============ データ保存モジュール ============ -->
 <script id="store-js">
 const Store = (() => {
-  const KEY = 'kcal-tracker-v1';
+  const BASE_KEY = 'kcal-tracker-v1';
+  let KEY = BASE_KEY;
   const SCHEMA = 1;
-  const defaults = () => ({schemaVersion:SCHEMA, settings:{heightCm:null, sex:'', birthDate:'', activityId:'', tolerance:100}, weights:{}, foods:[], exercises:[], days:{}});
+  const defaults = () => ({schemaVersion:SCHEMA, settings:{heightCm:null, sex:'', birthDate:'', activityId:'', tolerance:100, timezone:'Asia/Tokyo', hevyDefaultIntensity:null}, weights:{}, foods:[], exercises:[], days:{},
+    hevy:{seq:0, generation:null, accountKey:null, templatesAt:null, lastSyncAt:null}});
   let data = defaults();
   let memoryOnly = false;
 
@@ -245,7 +252,11 @@ const Store = (() => {
     if (s.birthDate && !isDate(s.birthDate)) bad('生年月日が不正です');
     if (s.activityId && !Calc.ACTIVITY.some(a=>a.id===s.activityId)) bad('活動レベルが不正です');
     if (s.tolerance!=null && !isNum(s.tolerance,0,2000)) bad('許容幅が不正です');
-    d.settings = {heightCm:s.heightCm??null, sex:s.sex||'', birthDate:s.birthDate||'', activityId:s.activityId||'', tolerance:s.tolerance??100};
+    d.settings = {heightCm:s.heightCm??null, sex:s.sex||'', birthDate:s.birthDate||'', activityId:s.activityId||'', tolerance:s.tolerance??100, timezone:s.timezone||'Asia/Tokyo', hevyDefaultIntensity:s.hevyDefaultIntensity||null};
+    if (!validTz(d.settings.timezone)) bad('タイムゾーンが不正です');
+    if (d.settings.hevyDefaultIntensity && !Calc.INTENSITY.some(i=>i.id===d.settings.hevyDefaultIntensity)) bad('Hevy既定強度が不正です');
+    const hv = o.hevy||{};
+    d.hevy = {seq:isNum(hv.seq)?hv.seq:0, generation:isNum(hv.generation)?hv.generation:null, accountKey:hv.accountKey?str(hv.accountKey,40):null, templatesAt:hv.templatesAt?str(hv.templatesAt,40):null, lastSyncAt:hv.lastSyncAt?str(hv.lastSyncAt,40):null};
     for (const [k,v] of Object.entries(o.weights||{})) { if(!isDate(k)||!isNum(v,20,300)) bad('体重記録が不正です: '+k); d.weights[k]=v; }
     d.foods = (o.foods||[]).map(f => validateFood(f, bad));
     for (const [k,day] of Object.entries(o.days||{})) {
@@ -256,10 +267,16 @@ const Store = (() => {
         nd.meals.push({id:str(m.id,40)||uid(), meal:m.meal, foodId:m.foodId?str(m.foodId,40):null, name:str(m.name), unit:str(m.unit,20), amount:m.amount, baseAmount:m.baseAmount, baseKcal:m.baseKcal, kcal:m.kcal, note:str(m.note,500)});
       }
       for (const w of day.workouts||[]) {
-        if (!isNum(w.durationMin,0,1440) || !isNum(w.metUsed,1,30) || (w.kcalOverride!=null && !isNum(w.kcalOverride,0,20000))) bad('筋トレ記録が不正です: '+k);
-        const exs = (w.exercises||[]).map(e => { if(!isNum(e.weightKg,0,1000)||!isNum(e.reps,0,1000)||!isNum(e.sets,0,1000)) bad('種目が不正です: '+k); return {name:str(e.name), weightKg:e.weightKg, reps:e.reps, sets:e.sets, exerciseId:e.exerciseId?str(e.exerciseId,60):null, hevyTemplateId:e.hevyTemplateId?str(e.hevyTemplateId,100):null}; });
+        const isHevy = !!w.source && w.source!=='manual';
+        if (!isNum(w.durationMin,0,1440) || (w.metUsed==null ? !isHevy : !isNum(w.metUsed,1,30)) || (w.kcalOverride!=null && !isNum(w.kcalOverride,0,20000))) bad('筋トレ記録が不正です: '+k);
+        const optNum = (v, max) => v==null ? null : (isNum(v,0,max) ? v : bad('セット情報が不正です: '+k));
+        const exs = (w.exercises||[]).map(e => { if(!isNum(e.weightKg,0,1000)||!isNum(e.reps,0,1000)||!isNum(e.sets,0,1000)) bad('種目が不正です: '+k);
+          const row = {name:str(e.name), weightKg:e.weightKg, reps:e.reps, sets:e.sets, exerciseId:e.exerciseId?str(e.exerciseId,60):null, hevyTemplateId:e.hevyTemplateId?str(e.hevyTemplateId,100):null};
+          if (Array.isArray(e.setsDetail)) { row.setsDetail = e.setsDetail.slice(0,200).map(s => ({index:isNum(s.index,0,1000)?s.index:0, type:str(s.type,20), weightKg:optNum(s.weightKg,1000), reps:optNum(s.reps,10000), durationSeconds:optNum(s.durationSeconds,86400), distanceMeters:optNum(s.distanceMeters,1e7), rpe:optNum(s.rpe,10), customMetric:optNum(s.customMetric,1e6)})); row.derived = !!e.derived; row.supersetId = isNum(e.supersetId)?e.supersetId:null; row.notes = str(e.notes,500); }
+          return row; });
         nd.workouts.push({id:str(w.id,40)||uid(), source:str(w.source,40)||'manual', externalId:w.externalId?str(w.externalId,100):null, importedAt:w.importedAt?str(w.importedAt,40):null, externalUpdatedAt:w.externalUpdatedAt?str(w.externalUpdatedAt,40):null,
-          title:str(w.title), durationMin:w.durationMin, intensity:str(w.intensity,20), metUsed:w.metUsed, kcalOverride:w.kcalOverride??null, exercises:exs, note:str(w.note,500)});
+          title:str(w.title), durationMin:w.durationMin, intensity:str(w.intensity,20), metUsed:w.metUsed??null, kcalOverride:w.kcalOverride??null, exercises:exs, note:str(w.note,500),
+          ...(isHevy ? {accountKey:w.accountKey?str(w.accountKey,40):null, startTime:str(w.startTime,40), endTime:str(w.endTime,40), tz:str(w.tz,60), hevyNote:str(w.hevyNote,1000), durationBasis:str(w.durationBasis,40), calc:(w.calc&&typeof w.calc==='object')?{version:isNum(w.calc.version)?w.calc.version:1, method:str(w.calc.method,30), intensity:str(w.calc.intensity,20), met:isNum(w.calc.met)?w.calc.met:null, timeBasis:str(w.calc.timeBasis,40), note:str(w.calc.note,200), appliedAt:str(w.calc.appliedAt,40)}:null} : {})});
       }
       if (day.cond) {
         const c = day.cond;
@@ -277,6 +294,13 @@ const Store = (() => {
     if (!f || typeof f.name!=='string' || !f.name.trim() || !isNum(f.baseAmount,1e-9,100000) || !isNum(f.kcal,0,100000)) bad('マスタ項目が不正です');
     return {id:str(f.id,40)||uid(), name:str(f.name,100).trim(), baseAmount:f.baseAmount, unit:str(f.unit,20), kcal:f.kcal, note:str(f.note,500)};
   }
+
+  const validTz = tz => { try { new Intl.DateTimeFormat('en-CA', {timeZone:tz}); return typeof tz==='string' && tz.length<=60; } catch(e){ return false; } };
+  // アカウントごとに保存領域を分ける（別アカウントのデータが混ざらない）
+  function setNamespace(ns){ KEY = BASE_KEY + (ns ? ':' + ns : ''); data = defaults(); }
+  const legacyExists = () => { try { return !!localStorage.getItem(BASE_KEY); } catch(e){ return false; } };
+  const hasOwnData = () => { try { return !!localStorage.getItem(KEY); } catch(e){ return false; } };
+  function adoptLegacy(){ try { const raw = localStorage.getItem(BASE_KEY); if (!raw) return false; validate(JSON.parse(raw)); localStorage.setItem(KEY, raw); localStorage.removeItem(BASE_KEY); return true; } catch(e){ return false; } }
 
   function load(){
     try { const raw = localStorage.getItem(KEY); if (raw) data = validate(JSON.parse(raw)); }
@@ -322,7 +346,7 @@ const Store = (() => {
 
   return {
     get data(){ return data; }, get memoryOnly(){ return memoryOnly; },
-    load, save, uid, validate, validateFood, defaults, getDay, mutDay, weightFor, liveCond, lockCond, condFor, refreshCond, findWorkout, importWorkouts,
+    load, save, uid, validate, validateFood, defaults, getDay, mutDay, weightFor, liveCond, lockCond, condFor, refreshCond, findWorkout, importWorkouts, setNamespace, legacyExists, hasOwnData, adoptLegacy, validTz,
     replaceAll(o){ data = validate(o); save(); },
     exportAll(){ return JSON.stringify(data, null, 2); }
   };
@@ -467,6 +491,11 @@ const Ex = (() => {
     }
     return {est:{method:'unset'}, via:'none'};
   }
+  // 記録の種目行。種目マスタIDがあれば名前より優先（Hevy由来は種目IDで対応）
+  const labelForRow = (row, exercises) => {
+    const entry = row.exerciseId && exercises.find(x=>x.id===row.exerciseId);
+    return entry ? estimationLabel(effective(entry, exercises).est) : labelFor(row.name, exercises);
+  };
   const labelFor = (name, exercises) => {
     const {entry, ambiguous} = resolveName(name, exercises);
     if (!entry) return ambiguous ? '推定方式未設定（種目名が複数のマスタと一致）' : '推定方式未設定（種目マスタ未登録）';
@@ -560,7 +589,149 @@ const Ex = (() => {
     return res;
   }
   return {FORMAT, CATALOG, SRC_NAME, SRC_URL, TIME_DEF, entryKey, displayOf, namesOf, parseFile, planImport, applyImport, sanitizeEntry, catalogEstimation, userEstimation, estimationMet, estimationLabel,
-    resolveName, effective, labelFor, candidates, search, recordNames, manualFor, linkState, confirmLink, unlink, detectEquip, selfTest};
+    resolveName, effective, labelFor, labelForRow, candidates, search, recordNames, manualFor, linkState, confirmLink, unlink, detectEquip, selfTest};
+})();
+</script>
+
+<!-- ============ Hevy同期の反映ロジック（DOM・通信に非依存） ============ -->
+<script id="hevysync-js">
+const HevySync = (() => {
+  const CALC_VERSION = 1;
+  const dateInTz = (iso, tz) => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {timeZone:tz, year:'numeric', month:'2-digit', day:'2-digit'}).formatToParts(new Date(iso)).map(x=>[x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}`;
+  };
+  const timeInTz = (iso, tz) => new Intl.DateTimeFormat('ja-JP', {timeZone:tz, hour:'2-digit', minute:'2-digit', hour12:false}).format(new Date(iso));
+  // 開始〜終了の経過分（休憩・待機を含む）。種目ごとの動作時間ではない。
+  const elapsedMin = (s, e) => { const a = Date.parse(s), b = Date.parse(e); return (isFinite(a) && isFinite(b) && b > a) ? Math.round((b-a)/6000)/10 : 0; };
+  const num = v => (typeof v==='number' && isFinite(v)) ? v : null;
+  const working = sets => sets.filter(s => s.type !== 'warmup');
+
+  function mapExercise(ex, accountKey, exercises){
+    const sets = (Array.isArray(ex.sets) ? ex.sets : []).slice().sort((a,b)=>(a.index??0)-(b.index??0)).map((s, i) => ({
+      index:num(s.index) ?? i, type:typeof s.type==='string' ? s.type : 'normal', weightKg:num(s.weight_kg), reps:num(s.reps),
+      durationSeconds:num(s.duration_seconds), distanceMeters:num(s.distance_meters), rpe:num(s.rpe), customMetric:num(s.custom_metric)}));
+    const w = working(sets), top = w.filter(s=>s.weightKg!=null).sort((a,b)=>b.weightKg-a.weightKg)[0];
+    const tid = typeof ex.exercise_template_id==='string' ? ex.exercise_template_id : null;
+    const entry = tid && exercises.find(e => e.source==='hevy' && e.hevy.templateId===tid && (!e.hevy.isCustom || e.hevy.accountKey===accountKey));
+    return {name:String(ex.title||'').slice(0,200), weightKg:top ? top.weightKg : 0, reps:top ? (top.reps||0) : 0, sets:w.length, exerciseId:entry ? entry.id : null, hevyTemplateId:tid,
+      setsDetail:sets, derived:true, supersetId:num(ex.superset_id), notes:typeof ex.notes==='string' ? ex.notes.slice(0,500) : ''};
+  }
+
+  // Hevyのワークアウト → アプリの記録。ユーザー側の補正(強度・手入力kcal・メモ)は existing から引き継ぐ。
+  function toLocal(w, ctx){
+    const ex = ctx.existing, tz = (ex && ex.tz) || ctx.tz || 'Asia/Tokyo';
+    const rec = {id:ex ? ex.id : ctx.uid(), source:'hevy', externalId:w.id, accountKey:ctx.accountKey, importedAt:ctx.nowIso, externalUpdatedAt:typeof w.updated_at==='string' ? w.updated_at : null,
+      title:String(w.title||'').slice(0,200), hevyNote:typeof w.description==='string' ? w.description.slice(0,1000) : '', startTime:w.start_time, endTime:typeof w.end_time==='string' ? w.end_time : '', tz,
+      durationMin:elapsedMin(w.start_time, w.end_time), durationBasis:'elapsed_incl_rest',
+      exercises:(Array.isArray(w.exercises) ? w.exercises.slice().sort((a,b)=>(a.index??0)-(b.index??0)) : []).map(e=>mapExercise(e, ctx.accountKey, ctx.exercises || [])),
+      intensity:'', metUsed:null, kcalOverride:null, note:'', calc:null};
+    if (ex) { rec.intensity = ex.intensity; rec.metUsed = ex.metUsed; rec.kcalOverride = ex.kcalOverride; rec.note = ex.note; rec.calc = ex.calc; }
+    else if (ctx.defaultIntensity) {
+      const it = Calc.INTENSITY.find(i=>i.id===ctx.defaultIntensity);
+      if (it) { rec.intensity = it.id; rec.metUsed = it.met; rec.calc = {version:CALC_VERSION, method:'session_met', intensity:it.id, met:it.met, timeBasis:'elapsed_incl_rest', note:'取り込み時の既定強度', appliedAt:ctx.nowIso}; }
+    }
+    return rec;
+  }
+  function findRecord(days, accountKey, externalId){
+    for (const [date, d] of Object.entries(days)) { const i = d.workouts.findIndex(x=>x.source==='hevy' && x.externalId===externalId && x.accountKey===accountKey); if (i>=0) return {date, i}; }
+    return null;
+  }
+  // 変更を1件ずつ反映。再実行しても重複せず、削除はHevy由来の記録だけに作用する。
+  function applyChanges(data, changes, ctx){
+    const res = {added:0, updated:0, moved:0, deleted:0};
+    for (const ch of changes) {
+      const found = findRecord(data.days, ctx.accountKey, ch.workoutId);
+      if (ch.kind === 'delete') { if (found) { data.days[found.date].workouts.splice(found.i, 1); res.deleted++; } continue; }
+      const w = ch.workout, existing = found ? data.days[found.date].workouts[found.i] : null;
+      const rec = toLocal(w, {...ctx, existing, exercises:data.exercises});
+      const date = dateInTz(w.start_time, rec.tz);
+      if (found && found.date === date) { data.days[date].workouts[found.i] = rec; res.updated++; continue; }
+      if (found) { data.days[found.date].workouts.splice(found.i, 1); res.moved++; } else res.added++;
+      const day = data.days[date] || (data.days[date] = {mealsComplete:false, meals:[], workouts:[], cond:null});
+      day.workouts.push(rec);
+      if (ctx.onDate) ctx.onDate(date);
+    }
+    return res;
+  }
+  function purge(data, accountKey){
+    let n = 0;
+    for (const d of Object.values(data.days)) { const before = d.workouts.length; d.workouts = d.workouts.filter(w => !(w.source==='hevy' && (accountKey==null || w.accountKey===accountKey))); n += before - d.workouts.length; }
+    return n;
+  }
+  function applyDefaultIntensity(data, intensityId, nowIso){
+    const it = Calc.INTENSITY.find(i=>i.id===intensityId); let n = 0;
+    if (!it) return 0;
+    for (const d of Object.values(data.days)) for (const w of d.workouts) if (w.source==='hevy' && w.kcalOverride==null && w.metUsed==null) {
+      w.intensity = it.id; w.metUsed = it.met; w.calc = {version:CALC_VERSION, method:'session_met', intensity:it.id, met:it.met, timeBasis:'elapsed_incl_rest', note:'未計算の記録へ既定強度を適用', appliedAt:nowIso}; n++;
+    }
+    return n;
+  }
+  // サーバーが返すテンプレート(Hevy生の項目)を既存の種目マスタ取り込み形式へ。画像URLは扱わない。
+  const templatesToFile = (list, accountKey, fetchedAt) => ({format:Ex.FORMAT, schemaVersion:1, fetchedAt, accountKey,
+    exercises:list.filter(t=>t && typeof t.id==='string' && typeof t.title==='string').map(t=>({hevyId:t.id, title:t.title, type:t.type??null, primaryMuscleGroup:t.primary_muscle_group??null,
+      secondaryMuscleGroups:Array.isArray(t.secondary_muscle_groups) ? t.secondary_muscle_groups.filter(s=>typeof s==='string') : [], equipment:t.equipment??null, isCustom:t.is_custom===true, thumbnailUrl:null, extra:{}}))});
+
+  // 種目の集計値。Hevy由来はセット詳細から、手入力は 重量×回数×セット から。
+  function exStats(e){
+    if (Array.isArray(e.setsDetail)) {
+      const w = working(e.setsDetail).filter(s=>s.weightKg!=null && s.reps!=null);
+      return {max:w.reduce((m,s)=>Math.max(m,s.weightKg),0), vol:w.reduce((a,s)=>a+s.weightKg*s.reps, 0), rm:w.reduce((m,s)=>Math.max(m,s.weightKg*(1+s.reps/30)),0), sets:working(e.setsDetail).length};
+    }
+    return {max:e.weightKg, vol:e.weightKg*e.reps*e.sets, rm:e.weightKg*(1+e.reps/30), sets:e.sets};
+  }
+
+  function selfTest(){
+    const res = [], ok = (n,c,d='')=>res.push({name:n, ok:!!c, detail:d});
+    let n = 0; const uid = () => 'h'+(++n), nowIso = '2026-03-01T00:00:00Z';
+    const hw = (id, o={}) => ({id, title:'Fictional Push Day', description:null, start_time:'2026-02-10T14:30:00Z', end_time:'2026-02-10T15:20:00Z', updated_at:'2026-02-10T15:21:00Z',
+      exercises:[{index:1, title:'Fictional Fly', exercise_template_id:'TEST-0002', sets:[{index:0, type:'normal', weight_kg:20, reps:12}]},
+        {index:0, title:'Fictional Bench Press (Barbell)', exercise_template_id:'TEST-0001', sets:[{index:1, type:'normal', weight_kg:60, reps:8, rpe:8}, {index:0, type:'warmup', weight_kg:40, reps:10}]}], ...o});
+    const mk = () => ({days:{}, exercises:[]}), ctx = (o={}) => ({accountKey:'acct1', tz:'Asia/Tokyo', defaultIntensity:null, uid, nowIso, ...o});
+    ok('日付: UTC 14:30 は東京では翌日、NYでは当日', dateInTz('2026-01-01T15:30:00Z','Asia/Tokyo')==='2026-01-02' && dateInTz('2026-01-01T15:30:00Z','America/New_York')==='2026-01-01');
+    ok('日またぎは開始日に集計（東京23:30開始→当日）', dateInTz('2026-01-01T14:30:00Z','Asia/Tokyo')==='2026-01-01');
+    ok('経過時間: 14:30〜15:20 = 50分（休憩含む経過）', elapsedMin('2026-02-10T14:30:00Z','2026-02-10T15:20:00Z')===50 && elapsedMin('2026-02-10T15:20:00Z','2026-02-10T14:30:00Z')===0);
+    const d = mk(); const r1 = applyChanges(d, [{kind:'upsert', workoutId:'W1', workout:hw('W1')}], ctx());
+    const rec = d.days['2026-02-10'].workouts[0];
+    ok('取り込み: 開始時刻(UTC)を東京日付 2026-02-10 に集計し、1件追加', r1.added===1 && Object.keys(d.days).join()==='2026-02-10' && rec.source==='hevy' && rec.externalId==='W1');
+    ok('種目・セットを順序どおり保持（index順）。重量kg・回数・RPEが保たれる', rec.exercises[0].name==='Fictional Bench Press (Barbell)' && rec.exercises[0].setsDetail[0].type==='warmup' && rec.exercises[0].setsDetail[1].weightKg===60 && rec.exercises[0].setsDetail[1].rpe===8);
+    ok('ウォームアップは作業セット数から除外（要約値）', rec.exercises[0].sets===1 && rec.exercises[0].weightKg===60 && rec.exercises[0].derived===true);
+    ok('種目ごとの動作時間は補わない（経過時間を割り当てない）', rec.exercises.every(e=>e.durationMin===undefined && e.durationSeconds===undefined) && rec.durationBasis==='elapsed_incl_rest');
+    ok('強度未設定は未計算（method none、0kcalと区別）', Calc.workoutKcal(rec, 70).method==='none' && rec.metUsed===null);
+    const d2 = mk(); applyChanges(d2, [{kind:'upsert', workoutId:'W1', workout:hw('W1')}], ctx({defaultIntensity:'moderate'}));
+    const r2 = d2.days['2026-02-10'].workouts[0], k2 = Calc.workoutKcal(r2, 70);
+    ok('既定強度(ふつう MET5.0)なら (5-1)×70kg×50/60h = 233.3kcal、方式・版を保存', Math.abs(k2.kcal-233.333)<0.01 && r2.calc.method==='session_met' && r2.calc.version===1 && r2.calc.timeBasis==='elapsed_incl_rest', String(k2.kcal));
+    applyChanges(d2, [{kind:'upsert', workoutId:'W1', workout:hw('W1')}], ctx({defaultIntensity:'light'}));
+    ok('再同期で重複しない・既定強度の設定変更で既存記録は変わらない', d2.days['2026-02-10'].workouts.length===1 && d2.days['2026-02-10'].workouts[0].metUsed===5.0);
+    const w0 = d2.days['2026-02-10'].workouts[0]; w0.kcalOverride = 250; w0.note = '補正メモ'; w0.intensity = 'vigorous';
+    applyChanges(d2, [{kind:'upsert', workoutId:'W1', workout:hw('W1', {title:'Fictional Edited', end_time:'2026-02-10T15:50:00Z'})}], ctx());
+    const w1 = d2.days['2026-02-10'].workouts[0];
+    ok('Hevy側の更新後も手動補正(kcal・メモ・強度)を保持しつつ原データは更新', w1.kcalOverride===250 && w1.note==='補正メモ' && w1.intensity==='vigorous' && w1.title==='Fictional Edited' && w1.durationMin===80);
+    ok('手入力kcalがあればそれを優先して1回だけ反映', Calc.workoutKcal(w1,70).kcal===250 && Calc.workoutKcal(w1,70).method==='manual');
+    const r3 = applyChanges(d2, [{kind:'upsert', workoutId:'W1', workout:hw('W1', {start_time:'2026-02-12T01:00:00Z', end_time:'2026-02-12T02:00:00Z'})}], ctx());
+    ok('開始日が変わると日付を移動（古い日に残らない）', r3.moved===1 && d2.days['2026-02-10'].workouts.length===0 && d2.days['2026-02-12'].workouts.length===1);
+    d2.days['2026-02-12'].workouts.push({id:'man1', source:'manual', title:'手入力', durationMin:30, metUsed:5, exercises:[]});
+    d2.days['2026-02-12'].workouts.push({id:'oth', source:'hevy', accountKey:'acct2', externalId:'W1', title:'他アカウント', durationMin:30, metUsed:null, exercises:[]});
+    const r4 = applyChanges(d2, [{kind:'delete', workoutId:'W1'}], ctx());
+    ok('削除はHevy由来(同アカウント)だけ。手入力・他アカウントは残る', r4.deleted===1 && d2.days['2026-02-12'].workouts.map(w=>w.id).sort().join()==='man1,oth');
+    const cond = {heightCm:175, sex:'male', birthDate:'1996-01-01', weightKg:70, activityId:'sedentary', tol:100};
+    const bal = Calc.dayBalance('2026-02-10', {mealsComplete:true, meals:[{kcal:2000}], workouts:d.days['2026-02-10'].workouts}, cond);
+    ok('未計算の筋トレは0kcal扱いではなく未算入として件数表示', bal.exerciseUncalculated===1 && bal.exercise===0);
+    const d3 = mk(); applyChanges(d3, [{kind:'upsert', workoutId:'W1', workout:hw('W1')}], ctx({defaultIntensity:'moderate'}));
+    applyChanges(d3, [{kind:'upsert', workoutId:'W1', workout:hw('W1')}, {kind:'upsert', workoutId:'W1', workout:hw('W1')}], ctx());
+    const b3 = Calc.dayBalance('2026-02-10', {mealsComplete:true, meals:[{kcal:2000}], workouts:d3.days['2026-02-10'].workouts}, cond);
+    ok('収支へは一度だけ反映（再同期・重複変更でも追加消費は233.3kcal、種目別は加算しない）', Math.abs(b3.exercise-233.333)<0.01 && b3.exerciseUncalculated===0 && Math.abs(b3.total-(b3.daily+233.333))<0.01);
+    const d4 = mk(); applyChanges(d4, [{kind:'upsert', workoutId:'W9', workout:hw('W9')}], ctx());
+    ok('purge: 指定アカウントのHevy記録だけ削除', purge(d4,'acctX')===0 && purge(d4,'acct1')===1);
+    const d5 = mk(); applyChanges(d5, [{kind:'upsert', workoutId:'W1', workout:hw('W1')}], ctx());
+    ok('未計算の記録へ既定強度を明示的に適用できる', applyDefaultIntensity(d5, 'light', nowIso)===1 && d5.days['2026-02-10'].workouts[0].metUsed===3.5);
+    const f = templatesToFile([{id:'TEST-0001', title:'Fictional Bench Press (Barbell)', type:'weight_reps', primary_muscle_group:'chest', secondary_muscle_groups:['triceps'], equipment:'barbell', is_custom:false, thumbnail_url:'https://example.invalid/a.png'}], 'acct1', nowIso);
+    const parsed = Ex.parseFile(f);
+    ok('テンプレート→種目マスタ形式へ変換（画像URLは保持しない）', parsed.items.length===1 && parsed.items[0].thumbnailUrl===null && parsed.items[0].equipment==='barbell');
+    ok('種目集計: Hevyセット詳細からボリューム 60×8=480（ウォームアップ除外）', exStats(rec.exercises[0]).vol===480 && exStats({weightKg:50, reps:10, sets:3}).vol===1500);
+    return res;
+  }
+  return {dateInTz, timeInTz, elapsedMin, toLocal, applyChanges, purge, applyDefaultIntensity, templatesToFile, exStats, findRecord, CALC_VERSION, selfTest};
 })();
 </script>
 
@@ -606,10 +777,10 @@ function viewDash(){
     <table>
       <tr><td>推定基礎代謝 (BMR)</td><td class="n">${fmt(b.bmr)} kcal</td></tr>
       <tr><td>日常活動を含む推定消費<div class="small">BMR × ${b.pal}（筋トレ除く）</div></td><td class="n">${fmt(b.daily)} kcal</td></tr>
-      <tr><td>筋トレによる追加消費<div class="small">安静分を除いた正味</div></td><td class="n">+${fmt(b.exercise)} kcal</td></tr>
+      <tr><td>筋トレによる追加消費<div class="small">安静分を除いた正味</div></td><td class="n">+${fmt(b.exercise)} kcal${b.exerciseUncalculated?`<div class="small">未計算 ${b.exerciseUncalculated}件を除く</div>`:''}</td></tr>
       <tr class="sum"><td>1日の推定総消費</td><td class="n">${fmt(b.total)} kcal</td></tr>
     </table>`;
-  const cinfo = b.status==='insufficient' ? '' : `<div class="small">計算条件: 体重 ${fmt(cond.weightKg,1)}kg・${esc(Calc.ACTIVITY.find(a=>a.id===cond.activityId).label)}・${locked?'この日に保存済みの条件':'現在の設定（記録すると保存されます）'}</div>`;
+  const cinfo = b.status==='insufficient' ? '' : (b.exerciseUncalculated ? `<div class="note">筋トレの<b>未計算 ${b.exerciseUncalculated}件</b>（運動強度が未設定）。追加消費には算入されていないため、差分は実際より多めに出る可能性があります。「日次記録」で強度を選んでください。</div>` : '') + `<div class="small">計算条件: 体重 ${fmt(cond.weightKg,1)}kg・${esc(Calc.ACTIVITY.find(a=>a.id===cond.activityId).label)}・${locked?'この日に保存済みの条件':'現在の設定（記録すると保存されます）'}</div>`;
   return `${dateBar()}
     <div class="card"><h2>${esc(d)} の収支</h2>${head}${rows}${cinfo}
       <div class="note">消費カロリーと収支は推定値であり、実測値ではありません。</div></div>
@@ -661,7 +832,7 @@ function anLift(){
   const rows = [];
   dates.forEach(d => {
     let max = 0, vol = 0, rm = 0, hit = false;
-    Store.data.days[d].workouts.forEach(w => w.exercises.filter(e=>e.name.trim()===ui.lift).forEach(e => { hit = true; max = Math.max(max,e.weightKg); vol += e.weightKg*e.reps*e.sets; rm = Math.max(rm, e.weightKg*(1+e.reps/30)); }));
+    Store.data.days[d].workouts.forEach(w => w.exercises.filter(e=>e.name.trim()===ui.lift).forEach(e => { hit = true; const s = HevySync.exStats(e); max = Math.max(max,s.max); vol += s.vol; rm = Math.max(rm, s.rm); }));
     if (hit) rows.push({d, max, vol, rm});
   });
   const shown = rows.slice(-12).reverse();
@@ -723,14 +894,7 @@ function viewDaily(){
   }).join('');
 
   const wf = ui.wform;
-  const wl = day.workouts.map(x => {
-    const k = Calc.workoutKcal(x, cond.weightKg), it = Calc.INTENSITY.find(i=>i.id===x.intensity);
-    return `<div class="item"><div><b>${esc(x.title||'(名称なし)')}</b> <span class="small">${fmt(x.durationMin)}分・${esc(it?it.label:'')}・MET ${x.metUsed}</span><br>
-      <span class="small">${x.exercises.map(e=>`${esc(e.name)} ${e.weightKg}kg×${e.reps}回×${e.sets}set`).join(' / ')}</span><br>
-      ${x.exercises.length?`<span class="small">種目別の推定方式（参考表示・合計には未加算）: ${x.exercises.map(e=>`${esc(e.name)}＝${esc(Ex.labelFor(e.name, Store.data.exercises))}`).join(' / ')}</span><br>`:''}
-      <span class="small">消費 ${cond.weightKg||k.method==='manual'?fmt(k.kcal)+' kcal（'+(k.method==='manual'?'手入力':'推定')+'）':'体重未入力のため算出不可'}${x.source!=='manual'?' ・取込元:'+esc(x.source):''}${x.note?' ・ '+esc(x.note):''}</span></div>
-      <div class="acts"><button class="sm" data-act="w-edit" data-id="${x.id}">編集</button><button class="sm danger" data-act="w-del" data-id="${x.id}">削除</button></div></div>`;
-  }).join('') || '<div class="small">筋トレなし</div>';
+  const wl = day.workouts.map(x => workoutItem(x, cond)).join('') || '<div class="small">筋トレなし</div>';
   const it = Calc.INTENSITY.find(i=>i.id===wf.intensity);
 
   return `${dateBar()}
@@ -774,7 +938,7 @@ function viewDaily(){
     <label>消費カロリーの手入力・補正（任意・入力すると推定より優先）</label><input type="number" inputmode="decimal" step="any" data-f="wform.kcalOverride" value="${esc(wf.kcalOverride)}" placeholder="空欄なら推定式を使用">
     <label>メモ（任意）</label><input data-f="wform.note" value="${esc(wf.note)}" maxlength="200">
     <div class="btns"><button class="pri" data-act="w-save">${wf.editId?'更新':'追加'}</button>${wf.editId?'<button data-act="w-cancel">キャンセル</button>':''}</div>
-    <div style="margin-top:10px">${wl}</div>
+    <div style="margin-top:10px">${hevyAdjustForm()}${wl}</div>
     <table><tr class="sum"><td>筋トレ追加消費 合計</td><td class="n">${b.exercise==null?'—':fmt(b.exercise)+' kcal'}</td></tr></table>
   </div>
   <div class="card"><div class="small">計算条件の保存: 記録するとその日の体重・設定が保存され、後から設定を変えても過去日は変わりません。</div>
@@ -920,6 +1084,7 @@ function viewSettings(){
     <div class="btns"><button class="pri" data-act="settings-save">設定を保存</button></div>
     <div class="small">設定を変えても、すでに記録した日の計算条件は変わりません（日次記録の「条件を更新」で個別に反映）。</div></div>
 
+  ${accountCard()}${hevyCard()}
   <div class="card"><h2>データ入出力</h2>
     <div class="btns"><button data-act="export-all">全データをバックアップ(JSON)</button><button data-act="import-all">バックアップから復元</button><button class="danger" data-act="reset">全データを削除</button></div>
     <input type="file" id="allfile" accept="application/json,.json" hidden>
@@ -948,7 +1113,7 @@ function viewSettings(){
       <div class="small">MET（総消費÷安静時）から安静分の1METを引いた正味分のみを加算するため、基礎代謝との二重計上を避けています（1MET≈1kcal/kg/時の慣例換算）。係数: ${Calc.INTENSITY.map(i=>`${i.label}=${i.met}（コード${i.code}）`).join('、')}。<br>
       出典: 2024 Adult Compendium of Physical Activities（Herrmann SD et al., J Sport Health Sci 2024）<a href="https://pacompendium.com/conditioning-exercise/" target="_blank" rel="noopener">Conditioning Exercise</a>。<br>
       適用条件: セッション全体の時間（休憩込み）に対する平均的な値で、重量・回数・セット数からは算出しません。種目ごとには加算しません。手入力の値がある場合はそちらを優先します。</div></details>
-    <details><summary>Hevy連携の現状と拡張箇所</summary><div class="small">実装済み: <code>tools/fetch_hevy_exercises.py</code>（公式API <code>GET /v1/exercise_templates</code> のみ使用、キーは環境変数 <code>HEVY_API_KEY</code>）で作った種目JSONを、マスタ画面「筋トレ種目」から取り込めます。Hevy種目IDで更新し、再取り込みで重複しません。未実装: 履歴（<code>GET /v1/workouts</code>）の同期。記録は <code>source / externalId / importedAt / externalUpdatedAt</code> と、種目ごとの <code>exerciseId / hevyTemplateId</code> を持てる形式で、取込時は <code>Store.importWorkouts(date, list)</code> が source+externalId で重複判定します。Hevyの履歴にはワークアウト全体の開始・終了時刻はありますが、種目ごとの動作時間は含まれないため、種目別の時間は仮定しません。APIの条件はHevy公式ドキュメントで確認してください。</div></details>
+    <details><summary>Hevy連携の仕組みと制約</summary><div class="small">サーバー版（招待制ログイン）では、サーバーがAPIキーを暗号化して保管し、Hevy公式APIの <code>GET /v1/user/info</code>・<code>/v1/exercise_templates</code>・<code>/v1/workouts</code>・<code>/v1/workouts/events</code> だけを読み取りで呼びます（Hevyへの書き込みなし）。初回は直近90日を取り込み、以後は events（更新・削除）で差分同期します。削除は Hevy の削除イベントがあった記録だけに反映し、一覧に無いだけでは削除しません。ワークアウトIDで追加・更新するので再同期しても重複せず、手入力の記録や手動補正（強度・kcal・メモ）は保持されます。Hevyの履歴にあるのはワークアウト全体の開始・終了時刻で、種目ごとの動作時間は含まれないため、種目別の時間は仮定しません。種目マスタ単独の取り込み（<code>tools/fetch_hevy_exercises.py</code>）は、サーバーなしでも使えます。APIの利用条件はHevy公式で確認してください。</div></details>
   </div>
   <div class="card"><h2>計算の自己検証</h2><div class="btns" style="margin:0"><button data-act="selftest">検証を実行</button></div><div id="testout"></div></div>`;
 }
@@ -1002,6 +1167,180 @@ function buildReport(){
   return h;
 }
 
+/* ---------- バックエンド連携（ログイン・Hevy） ---------- */
+const Api = {
+  available:false, user:null, csrf:null,
+  async init(){
+    if (!/^https?:$/.test(location.protocol)) return;
+    try {
+      const r = await fetch('/api/session', {credentials:'same-origin', cache:'no-store'});
+      if (!r.ok || !(r.headers.get('content-type')||'').includes('json')) return;
+      const j = await r.json();
+      if (j.backend !== true) return;
+      this.available = true; this.user = j.user; this.csrf = j.csrfToken;
+    } catch(e) { /* バックエンドなし（静的配信・ローカル）として動く */ }
+  },
+  async call(method, path, body){
+    try {
+      const r = await fetch(path, {method, credentials:'same-origin', cache:'no-store', headers:{'Content-Type':'application/json', ...(this.csrf?{'X-CSRF-Token':this.csrf}:{})}, body:body===undefined?undefined:JSON.stringify(body)});
+      let data = {}; try { data = await r.json(); } catch(e) {}
+      if (r.status===401 && this.user) { toast('セッションが切れました。再ログインしてください', true); setTimeout(()=>location.reload(), 1200); }
+      return {ok:r.ok, status:r.status, data};
+    } catch(e) { return {ok:false, status:0, data:{message:'サーバーに接続できません'}}; }
+  }
+};
+
+const AUTO_SYNC_AFTER_MS = 15*60*1000, MIN_CLIENT_SYNC_MS = 20*1000;
+const Hevy = {
+  st:null, syncing:false, error:'', lastRun:0, testOk:null, changingKey:false, disc:false, lastSummary:null,
+  async refresh(){ const r = await Api.call('GET', '/api/hevy/status'); if (r.ok) this.st = r.data; return r.ok; },
+  async start(){ await this.refresh(); render(); if (this.st && this.st.connected && this.st.autoSync) this.sync(); },
+  async sync({mode='incremental', days, manual=false}={}){
+    if (this.syncing || !(this.st && this.st.connected)) return;
+    if (!manual && Date.now()-this.lastRun < MIN_CLIENT_SYNC_MS) return;
+    this.syncing = true; this.error = ''; render();
+    try {
+      const r = await Api.call('POST', '/api/hevy/sync', {mode, days});
+      if (r.ok) { this.lastSummary = r.data.summary; if (r.data.status) this.st = r.data.status; }
+      else if (!['too_soon','busy'].includes(r.data.error)) throw new Error(r.data.message || '同期に失敗しました');
+      await this.pull();
+    } catch(e) { this.error = e.message || '同期に失敗しました'; }
+    finally { this.syncing = false; this.lastRun = Date.now(); await this.refresh(); render(); }
+  },
+  // サーバーの変更履歴を、前回位置から順に取り込む。1バッチごとに保存し、途中で止まっても安全。
+  async pull(){
+    const H = Store.data.hevy; let guard = 0;
+    for (;;) {
+      if (++guard > 300) throw new Error('変更が多すぎるため一旦中止しました。もう一度同期してください');
+      const r = await Api.call('GET', `/api/hevy/changes?after=${H.seq}` + (H.generation!=null ? `&generation=${H.generation}` : ''));
+      if (!r.ok) throw new Error(r.data.message || '履歴の取得に失敗しました');
+      const d = r.data;
+      if (H.accountKey && H.accountKey !== d.accountKey) {
+        if (confirm('連携先のHevyアカウントが以前と異なります。\nOK: 以前のアカウント由来のHevy記録をこの端末から削除する\nキャンセル: 以前の記録は残し、別アカウントの記録として分けて保持する')) HevySync.purge(Store.data, H.accountKey);
+        H.seq = 0; H.generation = null; H.accountKey = d.accountKey; H.templatesAt = null; persist(); continue;
+      }
+      if (!H.accountKey) H.accountKey = d.accountKey;
+      if (d.generationChanged) { HevySync.purge(Store.data, H.accountKey); H.seq = 0; H.generation = d.generation; persist(); continue; }
+      H.generation = d.generation;
+      HevySync.applyChanges(Store.data, d.changes, {accountKey:d.accountKey, tz:Store.data.settings.timezone, defaultIntensity:Store.data.settings.hevyDefaultIntensity, uid:Store.uid, nowIso:new Date().toISOString(), onDate:date=>Store.lockCond(date)});
+      H.seq = d.nextSeq; persist();
+      if (!d.hasMore) break;
+    }
+    await this.refresh();
+    if (this.st && this.st.templatesAt && this.st.templatesAt !== H.templatesAt) await this.pullTemplates();
+    H.lastSyncAt = new Date().toISOString(); persist();
+  },
+  async pullTemplates(){
+    const r = await Api.call('GET', '/api/hevy/templates');
+    if (!r.ok) return;
+    const f = HevySync.templatesToFile(r.data.templates, r.data.accountKey, r.data.fetchedAt);
+    const parsed = Ex.parseFile(f), plan = Ex.planImport(parsed, Store.data.exercises);
+    Ex.applyImport(plan, Store.data.exercises, Store.uid, r.data.fetchedAt);
+    Store.data.hevy.templatesAt = this.st.templatesAt;
+    // 種目マスタが増えたあとに、既存のHevy記録の種目IDへの紐づけだけを補う（記録の中身は変えない）
+    for (const d of Object.values(Store.data.days)) for (const w of d.workouts) if (w.source==='hevy') for (const e of w.exercises) if (!e.exerciseId && e.hevyTemplateId) {
+      const m = Store.data.exercises.find(x=>x.source==='hevy' && x.hevy.templateId===e.hevyTemplateId && (!x.hevy.isCustom || x.hevy.accountKey===w.accountKey)); if (m) e.exerciseId = m.id;
+    }
+    persist();
+  }
+};
+const Admin = {
+  data:null, invite:null,
+  async load(){ if (!(Api.user && Api.user.role==='admin')) return; const r = await Api.call('GET', '/api/admin/users'); if (r.ok) this.data = r.data; }
+};
+ui.hv = {keyDraft:'', show:false, days:'365', hform:null};
+
+function showAuth(){
+  const el = document.getElementById('auth'), token = ui.inviteToken;
+  el.innerHTML = `<div class="card" style="max-width:420px;margin:8vh auto 0"><h2>カロリー収支ノート</h2>
+    ${token ? `<div class="note">招待リンクからのアカウント作成です。ユーザー名とパスワード（10文字以上）を決めてください。</div>
+      <label>ユーザー名（英数字・_ . - 、3〜32文字）</label><input id="a-user" autocomplete="username" autocapitalize="off">
+      <label>パスワード（10文字以上）</label><input id="a-pass" type="password" autocomplete="new-password">
+      <div class="btns"><button class="pri" data-act="auth-accept">アカウントを作成</button></div>`
+    : `<label>ユーザー名</label><input id="a-user" autocomplete="username" autocapitalize="off">
+      <label>パスワード</label><input id="a-pass" type="password" autocomplete="current-password">
+      <div class="btns"><button class="pri" data-act="auth-login">ログイン</button></div>
+      <div class="small" style="margin-top:8px">このサービスは招待制です。アカウントが必要な場合は管理者に招待リンクを依頼してください。</div>`}
+    <div id="a-err" class="note err" style="display:none"></div></div>`;
+  el.classList.add('on');
+  const u = document.getElementById('a-user'); if (u) u.focus();
+}
+function authError(m){ const e = document.getElementById('a-err'); e.textContent = m; e.style.display = 'block'; }
+async function authSubmit(path, extra){
+  const r = await Api.call('POST', path, {username:document.getElementById('a-user').value.trim(), password:document.getElementById('a-pass').value, ...extra});
+  if (!r.ok) return authError(r.data.message || 'ログインできません');
+  location.href = '/';
+}
+
+function hevyCard(){
+  const card = (inner) => `<div class="card"><h2>Hevy連携</h2>${inner}</div>`;
+  if (!Api.available) return card(`<div class="note">この画面は<b>バックエンドなし</b>（静的配信またはローカルファイル）で動いています。Hevy連携は、招待制のサーバー版（ログインが必要なURL）でのみ使えます。</div><div class="small">APIキーはサーバーが暗号化して保管します。このHTML単体にはキー入力欄を設けていません。</div>`);
+  const st = Hevy.st, s = Store.data.settings, H = Store.data.hevy;
+  const common = `<div class="small">非公式の連携です（Hevy公認・提供許諾取得済みではありません）。APIはHevy Proの利用者向けで、利用条件はHevy公式で確認してください。Hevyへ記録を書き込むことはありません。</div>`;
+  const keyForm = `<label>Hevy APIキー</label>
+    <input id="hv-key" data-f="hv.keyDraft" type="${ui.hv.show?'text':'password'}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(ui.hv.keyDraft)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+    <div class="opt"><input type="checkbox" id="hv-show" data-f="hv.show" data-rerender ${ui.hv.show?'checked':''}><label for="hv-show">入力中のキーを表示</label></div>
+    ${Hevy.testOk?`<div class="note">接続できました: <b>${esc(Hevy.testOk.account.name||Hevy.testOk.account.username||'')}</b>（${esc(Hevy.testOk.account.username||'')}）${Hevy.testOk.sameAsSaved===false?'<br><b>現在連携中のアカウントとは別のアカウントです。</b>':''}</div>`:''}
+    <div class="btns"><button data-act="hv-test">接続テスト</button><button class="pri" data-act="hv-save" ${Hevy.testOk&&Hevy.testOk.draft===ui.hv.keyDraft?'':'disabled'}>連携を保存</button>${st&&st.connected?'<button data-act="hv-cancel-key">キャンセル</button>':''}</div>
+    <div class="small">キーは <a href="https://hevy.com/settings?developer" target="_blank" rel="noopener">Hevyの開発者設定</a> で発行します。入力したキーはサーバーへ送って暗号化保存され、この端末には保存されません。</div>`;
+  if (!st) return card('<div class="small">状態を確認中...</div>');
+  if (!st.connected || Hevy.changingKey) return card(`${common}${st.connected?'<h3>APIキーを変更</h3>':'<div class="note">未連携です。キーを入力して「接続テスト」→「連携を保存」の順に進めてください。</div>'}${keyForm}`);
+  const err = Hevy.error || st.lastError;
+  return card(`${common}
+    <table><tr><td>状態</td><td class="n"><b>登録済み</b>（キー末尾 ••••${esc(st.keyHint)}）</td></tr>
+    <tr><td>Hevyアカウント</td><td class="n">${esc(st.account.name||'')}<br><span class="small">${esc(st.account.username||'')}</span></td></tr>
+    <tr><td>最終同期（成功）</td><td class="n">${fdt(st.lastSuccessAt)}</td></tr>
+    <tr><td>取り込み期間</td><td class="n">直近${st.initialDays}日${st.initialFrom?'<br><span class="small">'+esc(st.initialFrom.slice(0,10))+' 以降</span>':''}</td></tr></table>
+    ${err?`<div class="note err">同期エラー: ${esc(err)}</div>`:''}
+    ${Hevy.lastSummary?`<div class="small">直近の結果: 追加${Hevy.lastSummary.added}・更新${Hevy.lastSummary.updated}・削除${Hevy.lastSummary.deleted}</div>`:''}
+    <div class="btns"><button class="pri" data-act="hv-sync" ${Hevy.syncing?'disabled':''}>${Hevy.syncing?'同期中...':'今すぐ同期'}</button><button data-act="hv-change-key">APIキーを変更</button><button class="danger" data-act="hv-disc-open">連携解除</button></div>
+    <div class="opt"><input type="checkbox" id="hv-auto" data-act="hv-autosync" ${st.autoSync?'checked':''}><label for="hv-auto">起動時・復帰時に自動同期（アプリを閉じている間は同期しません）</label></div>
+    <h3>過去分の追加取り込み</h3>
+    <div class="row"><select data-f="hv.days">${[['180','半年'],['365','1年'],['730','2年'],['1095','3年']].map(([v,l])=>`<option value="${v}" ${ui.hv.days===v?'selected':''}>直近${l}まで</option>`).join('')}</select><button data-act="hv-backfill" ${Hevy.syncing?'disabled':''}>追加で取り込む</button></div>
+    <h3>日別集計と消費カロリー</h3>
+    <label>集計タイムゾーン</label><input id="hv-tz" list="tzlist" value="${esc(s.timezone)}" autocapitalize="off"><datalist id="tzlist"><option>Asia/Tokyo</option><option>UTC</option><option>America/New_York</option><option>Europe/London</option></datalist>
+    <div class="small">開始時刻をこのタイムゾーンの日付に変換して集計します。日をまたぐトレーニングは<b>開始日</b>に集計します。変更は以後の取り込みから適用され、取り込み済みの記録は変わりません。</div>
+    <label>取り込み時の既定の運動強度</label><select id="hv-int"><option value="">未設定（強度を選ぶまで「未計算」）</option>${Calc.INTENSITY.map(i=>`<option value="${i.id}" ${s.hevyDefaultIntensity===i.id?'selected':''}>${i.label}（MET ${i.met}）</option>`).join('')}</select>
+    <div class="note">Hevyの記録には運動強度が含まれません。消費カロリーは Hevy の<b>開始〜終了の経過時間（休憩を含む）</b>×強度METで推定します。強度が決まるまでは<b>0kcalではなく「未計算」</b>とし、収支の追加消費には算入しません。重量×回数からの按分や種目別の加算はしません。</div>
+    <div class="btns"><button data-act="hv-save-prefs">設定を保存</button><button data-act="hv-apply-default">未計算のHevy記録に既定強度を適用</button></div>
+    ${Hevy.disc?`<h3>連携解除</h3><div class="note">アプリ（サーバー）に保存したキーを削除し、自動同期を止めます。<b>Hevy側のキーの失効は行われません</b>。不要になったキーはHevyの設定画面で失効させてください。</div>
+      <div class="opt"><input type="radio" name="hvdel" id="hvdel-k" value="keep" checked><label for="hvdel-k">取得済みのHevy履歴は保持する</label></div>
+      <div class="opt"><input type="radio" name="hvdel" id="hvdel-d" value="delete"><label for="hvdel-d">Hevy由来の履歴をサーバーと端末から削除する（手入力・食事は削除しません）</label></div>
+      <div class="btns"><button class="danger" data-act="hv-disc-confirm">連携を解除する</button><button data-act="hv-disc-cancel">キャンセル</button></div>`:''}`);
+}
+function accountCard(){
+  if (!Api.available || !Api.user) return '';
+  const a = Admin.data;
+  return `<div class="card"><h2>アカウント</h2>
+    <div class="small">ログイン中: <b>${esc(Api.user.username)}</b>（${Api.user.role==='admin'?'管理者':'利用者'}）。食事・身体情報などのデータはこの端末のブラウザ内にだけ保存され、アカウントごとに分かれています。</div>
+    <div class="btns"><button data-act="logout">ログアウト</button></div>
+    ${Api.user.role==='admin'?`<h3>利用者の招待・管理</h3>
+      <div class="btns"><button data-act="admin-invite">招待リンクを作る（72時間・一回限り）</button></div>
+      ${Admin.invite?`<div class="note">この招待リンクは<b>今だけ表示</b>されます。招待する本人にだけ伝えてください（期限 ${fdt(Admin.invite.expiresAt)}）。<input readonly value="${esc(Admin.invite.inviteUrl)}" onclick="this.select()"></div>`:''}
+      ${a?`<table>${a.users.map(u=>`<tr><td>${esc(u.username)}<div class="small">${u.role==='admin'?'管理者':'利用者'}・${u.status==='active'?'有効':'停止中'}</div></td><td class="n">${u.id===Api.user.id?'':`<button class="sm ${u.status==='active'?'danger':''}" data-act="${u.status==='active'?'admin-suspend':'admin-activate'}" data-id="${u.id}">${u.status==='active'?'停止':'再開'}</button>`}</td></tr>`).join('')}</table>
+      <div class="small">発行済みの招待: 未使用 ${a.invites.filter(i=>!i.used_at&&i.expires_at>new Date().toISOString()).length}件</div>`:''}`:''}</div>`;
+}
+function hevyAdjustForm(){
+  const f = ui.hv.hform; if (!f) return '';
+  return `<div class="note"><b>Hevy記録の補正</b>（Hevy由来の原データは変更しません。再同期しても保持されます）
+    <label>運動強度（セッション全体）</label><select data-f="hv.hform.intensity"><option value="">未設定（未計算）</option>${Calc.INTENSITY.map(i=>`<option value="${i.id}" ${f.intensity===i.id?'selected':''}>${i.label}（MET ${i.met}）</option>`).join('')}</select>
+    <label>消費カロリーの手入力・補正（外部機器の推定値/手入力値。入力すると優先）</label><input type="number" inputmode="decimal" step="any" data-f="hv.hform.kcalOverride" value="${esc(f.kcalOverride)}">
+    <label>メモ</label><input data-f="hv.hform.note" value="${esc(f.note)}" maxlength="200">
+    <div class="btns"><button class="pri" data-act="hw-save">保存</button><button data-act="hw-cancel">キャンセル</button></div></div>`;
+}
+const setsText = e => Array.isArray(e.setsDetail) ? e.setsDetail.map(s=>(s.type==='warmup'?'W:':'')+[s.weightKg!=null?s.weightKg+'kg':'', s.reps!=null?'×'+s.reps:'', s.durationSeconds!=null?s.durationSeconds+'秒':'', s.distanceMeters!=null?s.distanceMeters+'m':''].join('')).join(', ') : `${e.weightKg}kg×${e.reps}回×${e.sets}set`;
+function workoutItem(x, cond){
+  const k = Calc.workoutKcal(x, cond.weightKg), it = Calc.INTENSITY.find(i=>i.id===x.intensity), hevy = x.source==='hevy', tz = x.tz || Store.data.settings.timezone || 'Asia/Tokyo';
+  const kcalText = k.method==='none' ? '<b>未計算</b>（強度が未設定のため。0kcalではなく収支に未算入）' : (cond.weightKg||k.method==='manual') ? `${fmt(k.kcal)} kcal（${k.method==='manual'?'外部機器の推定値／手入力値':'セッション推定: MET '+x.metUsed+'×経過時間'}）` : '体重未入力のため算出不可';
+  const head = hevy ? `<b>${esc(x.title||'(名称なし)')}</b> <span class="tag ok">Hevy</span> <span class="small">${esc(HevySync.timeInTz(x.startTime, tz))}〜${esc(x.endTime?HevySync.timeInTz(x.endTime, tz):'')}（${esc(tz)}）・経過${fmt(x.durationMin,1)}分（休憩含む）${it?'・'+esc(it.label):''}</span>`
+    : `<b>${esc(x.title||'(名称なし)')}</b> <span class="small">${fmt(x.durationMin)}分・${esc(it?it.label:'')}・MET ${x.metUsed}</span>`;
+  return `<div class="item"><div>${head}<br>
+    <span class="small">${x.exercises.map(e=>`${esc(e.name)} ${esc(setsText(e))}`).join(' / ')}</span><br>
+    ${x.exercises.length?`<span class="small">種目別の推定方式（参考表示・合計には未加算）: ${x.exercises.map(e=>`${esc(e.name)}＝${esc(Ex.labelForRow(e, Store.data.exercises))}`).join(' / ')}</span><br>`:''}
+    <span class="small">消費 ${kcalText}${x.source!=='manual'?' ・取込元:'+esc(x.source):''}${x.note?' ・ '+esc(x.note):''}</span></div>
+    <div class="acts"><button class="sm" data-act="w-edit" data-id="${x.id}">${hevy?'補正':'編集'}</button>${hevy?'':`<button class="sm danger" data-act="w-del" data-id="${x.id}">削除</button>`}</div></div>`;
+}
+
 const TABS = [['dash','ダッシュボード'],['daily','日次記録'],['master','マスタ'],['settings','設定']];
 function render(){
   document.getElementById('nav').innerHTML = TABS.map(([k,l])=>`<button data-act="tab" data-id="${k}" class="${ui.tab===k?'on':''}">${l}</button>`).join('');
@@ -1053,7 +1392,7 @@ const Csv = {
   exercises(){
     const head = [['date'],['session_id'],['exercise_index'],['exercise_name',1],['weight_kg'],['reps'],['sets'],['volume_kg'],['exercise_id'],['hevy_template_id']];
     const rows = [];
-    Csv.dates().forEach(d => Store.getDay(d).workouts.forEach(w => w.exercises.forEach((e,i) => rows.push([d, w.id, i+1, e.name, e.weightKg, e.reps, e.sets, e.weightKg*e.reps*e.sets, e.exerciseId, e.hevyTemplateId]))));
+    Csv.dates().forEach(d => Store.getDay(d).workouts.forEach(w => w.exercises.forEach((e,i) => rows.push([d, w.id, i+1, e.name, e.weightKg, e.reps, e.sets, HevySync.exStats(e).vol, e.exerciseId, e.hevyTemplateId]))));
     return Csv.build(head, rows);
   }
 };
@@ -1077,7 +1416,7 @@ function exLink(name){
   return {exerciseId:entry.id, hevyTemplateId:t ? t.hevy.templateId : null};
 }
 const actions = {
-  tab(el){ ui.tab = el.dataset.id; },
+  tab(el){ ui.tab = el.dataset.id; if (ui.tab==='settings' && Api.user) { Hevy.refresh().then(render); Admin.load().then(render); } },
   dview(el){ ui.dview = el.dataset.id; },
   aview(el){ ui.aview = el.dataset.id; },
   pick(el){ ui.date = el.dataset.id; },
@@ -1157,11 +1496,72 @@ const actions = {
   },
   'w-edit'(el){
     const w = Store.getDay(ui.date).workouts.find(x=>x.id===el.dataset.id);
+    if (w.source==='hevy') { ui.hv.hform = {id:w.id, intensity:w.intensity||'', kcalOverride:w.kcalOverride??'', note:w.note||''}; return; }
     ui.wform = {editId:w.id, title:w.title, durationMin:w.durationMin, intensity:w.intensity, kcalOverride:w.kcalOverride??'', note:w.note,
       exercises:w.exercises.length?w.exercises.map(e=>({...e})):[{name:'',weightKg:'',reps:'',sets:''}], source:w.source, externalId:w.externalId, importedAt:w.importedAt};
   },
   'w-del'(el){ if(!confirm('この筋トレ記録を削除しますか？')) return; const day = Store.mutDay(ui.date); day.workouts = day.workouts.filter(x=>x.id!==el.dataset.id); persist(); },
   'w-cancel'(){ ui.wform = newWform(); },
+  'hw-cancel'(){ ui.hv.hform = null; },
+  'hw-save'(){
+    const f = ui.hv.hform, d = ui.date, w = Store.getDay(d).workouts.find(x=>x.id===f.id);
+    if (!w) throw new Error('記録が見つかりません');
+    w.kcalOverride = posNum(f.kcalOverride, '消費カロリー', {req:false, max:20000}); w.note = f.note.trim();
+    const it = Calc.INTENSITY.find(i=>i.id===f.intensity);
+    if (it) { w.intensity = it.id; w.metUsed = it.met; w.calc = {version:HevySync.CALC_VERSION, method:'session_met', intensity:it.id, met:it.met, timeBasis:'elapsed_incl_rest', note:'ユーザー設定', appliedAt:new Date().toISOString()}; }
+    else { w.intensity = ''; w.metUsed = null; w.calc = null; }
+    Store.lockCond(d); ui.hv.hform = null; persist(); toast('補正を保存しました');
+  },
+  'auth-login'(){ authSubmit('/api/login', {}); return 'noRender'; },
+  'auth-accept'(){ authSubmit('/api/invite/accept', {token:ui.inviteToken}); return 'noRender'; },
+  async logout(){ await Api.call('POST', '/api/logout', {}); location.href = '/'; },
+  async 'admin-invite'(){ const r = await Api.call('POST', '/api/admin/invites', {ttlHours:72}); if (!r.ok) throw new Error(r.data.message || '招待リンクを作れませんでした'); Admin.invite = r.data; await Admin.load(); },
+  async 'admin-suspend'(el){ if (!confirm('この利用者を停止します。ログイン中のセッションも無効になり、同期もできなくなります。')) return; const r = await Api.call('POST', `/api/admin/users/${el.dataset.id}/suspend`, {}); if (!r.ok) throw new Error(r.data.message); await Admin.load(); },
+  async 'admin-activate'(el){ const r = await Api.call('POST', `/api/admin/users/${el.dataset.id}/activate`, {}); if (!r.ok) throw new Error(r.data.message); await Admin.load(); },
+  async 'hv-test'(){
+    const r = await Api.call('POST', '/api/hevy/test', {apiKey:ui.hv.keyDraft.trim()});
+    if (!r.ok) { Hevy.testOk = null; throw new Error(r.data.message || '接続テストに失敗しました'); }
+    Hevy.testOk = {...r.data, draft:ui.hv.keyDraft}; toast('接続できました');
+  },
+  async 'hv-save'(){
+    if (!(Hevy.testOk && Hevy.testOk.draft===ui.hv.keyDraft)) throw new Error('先に接続テストを行ってください');
+    const body = {apiKey:ui.hv.keyDraft.trim()}, H = Store.data.hevy;
+    let r = await Api.call('POST', '/api/hevy/connect', body);
+    if (r.status===409 && r.data.error==='account_changed') {
+      const cur = r.data.current.name||r.data.current.username, inc = r.data.incoming.name||r.data.incoming.username;
+      if (!confirm(`連携先を「${cur}」から「${inc}」に切り替えます。履歴は混在させません。続けますか？`)) return;
+      const purge = confirm('以前のアカウントのHevy履歴を削除しますか？\nOK: サーバーと端末から削除\nキャンセル: 削除せず別管理で保持');
+      r = await Api.call('POST', '/api/hevy/connect', {...body, accountChange:purge?'purge':'keep'});
+      if (r.ok) { if (purge) HevySync.purge(Store.data, H.accountKey); Object.assign(H, {seq:0, generation:null, accountKey:null, templatesAt:null}); persist(); }
+    }
+    if (!r.ok) throw new Error(r.data.message || '保存できませんでした');
+    ui.hv.keyDraft = ''; Hevy.testOk = null; Hevy.changingKey = false; Hevy.st = r.data; toast('連携を保存しました');
+    Hevy.sync({manual:true});
+  },
+  'hv-change-key'(){ Hevy.changingKey = true; },
+  'hv-cancel-key'(){ Hevy.changingKey = false; Hevy.testOk = null; ui.hv.keyDraft = ''; },
+  'hv-sync'(){ Hevy.sync({manual:true}); return 'noRender'; },
+  'hv-backfill'(){ Hevy.sync({mode:'backfill', days:+ui.hv.days, manual:true}); return 'noRender'; },
+  async 'hv-autosync'(el){ const r = await Api.call('PUT', '/api/hevy/settings', {autoSync:el.checked}); if (!r.ok) throw new Error(r.data.message || '設定できませんでした'); Hevy.st = r.data; },
+  'hv-disc-open'(){ Hevy.disc = true; },
+  'hv-disc-cancel'(){ Hevy.disc = false; },
+  async 'hv-disc-confirm'(){
+    const del = document.querySelector('input[name=hvdel]:checked').value === 'delete', accountKey = Hevy.st && Hevy.st.accountKey;
+    const r = await Api.call('POST', '/api/hevy/disconnect', {deleteHistory:del});
+    if (!r.ok) throw new Error(r.data.message || '解除できませんでした');
+    if (del) { HevySync.purge(Store.data, accountKey); Object.assign(Store.data.hevy, {seq:0, generation:null, accountKey:null, templatesAt:null}); persist(); }
+    Hevy.disc = false; Hevy.st = {connected:false}; Hevy.error = ''; toast('連携を解除しました（Hevy側のキー失効は別途必要です）');
+  },
+  'hv-save-prefs'(){
+    const tz = document.getElementById('hv-tz').value.trim() || 'Asia/Tokyo', it = document.getElementById('hv-int').value;
+    if (!Store.validTz(tz)) throw new Error('タイムゾーンが正しくありません（例: Asia/Tokyo）');
+    Store.data.settings.timezone = tz; Store.data.settings.hevyDefaultIntensity = it || null; persist(); toast('保存しました（以後の取り込みから適用）');
+  },
+  'hv-apply-default'(){
+    const it = Store.data.settings.hevyDefaultIntensity; if (!it) throw new Error('先に既定の運動強度を選び、保存してください');
+    if (!confirm('強度が未設定・手入力kcalなしのHevy記録すべてに、既定強度を適用します。過去の収支が変わります。よろしいですか？')) return;
+    const n = HevySync.applyDefaultIntensity(Store.data, it, new Date().toISOString()); persist(); toast(n+'件に適用しました');
+  },
   'refresh-cond'(){ if(!confirm('この日の計算条件（体重・身長・活動レベル・許容幅）を現在の設定で更新します。よろしいですか？')) return; Store.refreshCond(ui.date); persist(); toast('更新しました'); },
   'food-save'(){
     const f = ui.fform;
@@ -1229,6 +1629,7 @@ const actions = {
   'settings-save'(){
     const g = id => document.getElementById(id).value, act = document.querySelector('input[name=act]:checked');
     Store.data.settings = {
+      ...Store.data.settings,
       heightCm:posNum(g('s-h'),'身長',{req:false,min:50,max:250}), sex:g('s-sex'), birthDate:g('s-b'), activityId:act?act.value:'',
       tolerance:posNum(g('s-tol'),'許容幅',{max:2000})
     };
@@ -1255,12 +1656,15 @@ document.addEventListener('click', e => {
   run(el);
 });
 function run(el){
-  try { if (actions[el.dataset.act](el) !== 'noRender') render(); }
-  catch(err){ toast(err.message, true); render(); }
+  try {
+    const r = actions[el.dataset.act](el);
+    if (r && typeof r.then==='function') { r.then(()=>render()).catch(err=>{ toast(err.message, true); render(); }); return; }
+    if (r !== 'noRender') render();
+  } catch(err){ toast(err.message, true); render(); }
 }
 document.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.act==='toggle-complete') { run(t); return; }
+  if (t.dataset.act==='toggle-complete' || t.dataset.act==='hv-autosync') { run(t); return; }
   if (t.id==='foodfile') readFile(t, o => {
     if (!o || !Array.isArray(o.foods)) throw new Error('マスタJSONの形式が不正です');
     const items = o.foods.map(f => Store.validateFood(f, m=>{throw new Error(m);}));
@@ -1278,20 +1682,42 @@ document.addEventListener('change', e => {
     ui.exImport = {parsed, plan:Ex.planImport(parsed, Store.data.exercises)}; render();
   });
   if (t.dataset.f==='date') { if (Calc.parseDate(t.value)) { ui.date = t.value; render(); } }
-  else if (t.dataset.f && t.dataset.rerender!==undefined) { setPath(t.dataset.f, t.value); if (t.dataset.f==='mform.foodId') { ui.mform.amount=''; ui.mform.mode='amount'; } render(); }
+  else if (t.dataset.f && t.dataset.rerender!==undefined) { setPath(t.dataset.f, t.type==='checkbox' ? t.checked : t.value); if (t.dataset.f==='mform.foodId') { ui.mform.amount=''; ui.mform.mode='amount'; } render(); }
 });
 document.addEventListener('input', e => {
   const t = e.target; if (!t.dataset.f || t.dataset.f==='date' || t.dataset.rerender!==undefined) return;
   setPath(t.dataset.f, t.type==='checkbox' ? t.checked : t.value); if (t.dataset.f.startsWith('mform.')) updatePreview();
 });
 
-Store.load();
-render();
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-  const hadSW = !!navigator.serviceWorker.controller;
-  navigator.serviceWorker.register('sw.js').catch(() => {});
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadSW) location.reload(); });
+function registerSW(){
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    const hadSW = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadSW) location.reload(); });
+  }
 }
+async function boot(){
+  const q = new URLSearchParams(location.search), h = new URLSearchParams(location.hash.replace(/^#/, ''));
+  ui.inviteToken = h.get('invite') || q.get('invite'); // 招待トークンは#以降（サーバーやログに送られない）
+  if (ui.inviteToken) history.replaceState(null, '', location.pathname); // 招待トークンをURLに残さない
+  await Api.init();
+  if (Api.available) {
+    if (!Api.user) { showAuth(); render(); registerSW(); return; }
+    ui.inviteToken = null;
+    Store.setNamespace('u' + Api.user.id); // アカウントごとに保存領域を分ける
+    if (!Store.hasOwnData() && Store.legacyExists() && confirm('この端末に、ログイン前から保存されていた既存データがあります。このアカウントのデータとして引き継ぎますか？\n（他の人のデータの可能性がある場合は「キャンセル」）')) Store.adoptLegacy();
+  }
+  Store.load();
+  render();
+  registerSW();
+  if (Api.user) {
+    Hevy.start();
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState==='visible' && Hevy.st && Hevy.st.connected && Hevy.st.autoSync && Date.now()-Hevy.lastRun > AUTO_SYNC_AFTER_MS) Hevy.sync();
+    });
+  }
+}
+boot();
 </script>
 </body>
 </html>

@@ -3,3 +3,8 @@ hevy-exercises.json
 .env
 __pycache__/
 *.tmp
+
+.venv/
+data/
+test_out.txt
+.env

@@ -1,4 +1,4 @@
-const CACHE = 'kcal-note-v2';
+const CACHE = 'kcal-note-v3';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -7,9 +7,10 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
-// ネットワーク優先で常に最新を取得し、オフライン時だけキャッシュを使う
+// ネットワーク優先で常に最新を取得し、オフライン時だけキャッシュを使う。/api/ は絶対にキャッシュしない（利用者間でデータが混ざらないように）
 self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
+  const url = new URL(e.request.url);
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.includes('/api/')) return;
   e.respondWith(fetch(e.request, {cache: 'no-cache'}).then(res => {
     if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
     return res;
