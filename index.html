@@ -474,6 +474,10 @@ function viewSettings(){
     <input type="file" id="allfile" accept="application/json,.json" hidden>
     <div class="small">データはこの端末のブラウザ内にのみ保存されます。Safariのサイトデータ削除で消えるため、定期的にバックアップしてください。</div></div>
 
+  <div class="card"><h2>CSV出力（分析用）</h2>
+    <div class="btns" style="margin:0"><button data-act="csv" data-id="daily">日次サマリー</button><button data-act="csv" data-id="meals">食事記録</button><button data-act="csv" data-id="sessions">筋トレセッション</button><button data-act="csv" data-id="exercises">筋トレ種目</button></div>
+    <div class="small">UTF-8(BOM付き)・全期間・1行目はヘッダー。日次サマリーはダッシュボードと同じ値（体重・基礎代謝・消費・摂取・差分・判定 status）です。status: over / under / maintain / provisional(暫定) / unrecorded(未記録) / insufficient(情報不足)。差分は摂取−推定総消費。空欄は「値なし」を表し0ではありません。筋トレの消費kcalはセッションCSVにのみあり、種目CSVとはsession_idで結合します（種目側にkcalは持たせず二重計上を防止）。</div></div>
+
   <div class="card"><h2>計算方法・出典</h2>
     <details open><summary>全体の式</summary><pre>推定総消費 = 基礎代謝 × 活動係数 + 筋トレ追加消費
 差分 = 摂取 − 推定総消費（正=オーバー / 負=アンダー）
@@ -502,9 +506,50 @@ function render(){
 function setPath(path, value){
   const p = path.split('.'); let o = ui; for (let i=0;i<p.length-1;i++) o = o[p[i]]; o[p[p.length-1]] = value;
 }
-function download(name, text){
-  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text],{type:'application/json'})); a.download = name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+function download(name, text, type='application/json'){
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([name.endsWith('.csv')?'\ufeff'+text:text],{type})); a.download = name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
+/* CSV: 1行目はヘッダー、数値は素の数値、テキストは引用符でエスケープ */
+const Csv = {
+  cell(v, text){
+    if (v==null) return '';
+    let s = typeof v==='number' ? String(Math.round(v*100)/100) : String(v);
+    if (text && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return /[",\n\r]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+  },
+  build(head, rows){ return [head.map(h=>h[0]).join(','), ...rows.map(r => r.map((v,i)=>Csv.cell(v, head[i][1])).join(','))].join('\r\n') + '\r\n'; },
+  dates(){ return [...new Set([...Object.keys(Store.data.days), ...Object.keys(Store.data.weights)])].sort(); },
+  daily(){
+    const head = [['date'],['weight_kg'],['weight_source_date'],['height_cm'],['sex'],['age'],['activity_level'],['activity_factor'],['tolerance_kcal'],['conditions_locked'],
+      ['bmr_kcal'],['daily_expenditure_kcal'],['workout_kcal'],['total_expenditure_kcal'],['intake_kcal'],['balance_kcal'],['status'],['meals_complete'],['meal_count'],['workout_count']];
+    const rows = Csv.dates().map(d => {
+      const day = Store.getDay(d), {cond, locked} = Store.condFor(d), b = Calc.dayBalance(d, day, cond), w = Store.weightFor(d);
+      const age = cond.birthDate ? Calc.ageOn(cond.birthDate, d) : null;
+      return [d, cond.weightKg, locked ? (Store.data.weights[d]!=null?d:null) : (w?w.date:null), cond.heightCm, cond.sex||null, age, cond.activityId||null, b.pal??null, cond.tol, locked?1:0,
+        b.bmr, b.daily, b.exercise, b.total, b.intake, b.diff, b.status, day.mealsComplete?1:0, day.meals.length, day.workouts.length];
+    });
+    return Csv.build(head, rows);
+  },
+  meals(){
+    const head = [['date'],['meal_type'],['name',1],['food_id'],['amount'],['unit',1],['base_amount'],['base_kcal'],['kcal'],['note',1],['entry_id']];
+    const rows = [];
+    Csv.dates().forEach(d => Store.getDay(d).meals.forEach(m => rows.push([d, m.meal, m.name, m.foodId, m.amount, m.unit, m.baseAmount, m.baseKcal, m.kcal, m.note, m.id])));
+    return Csv.build(head, rows);
+  },
+  sessions(){
+    const head = [['date'],['session_id'],['title',1],['duration_min'],['intensity'],['met'],['kcal_method'],['workout_kcal'],['exercise_count'],['source'],['external_id'],['imported_at'],['note',1]];
+    const rows = [];
+    Csv.dates().forEach(d => { const w0 = Store.condFor(d).cond.weightKg; Store.getDay(d).workouts.forEach(w => { const k = Calc.workoutKcal(w, w0);
+      rows.push([d, w.id, w.title, w.durationMin, w.intensity, w.metUsed, k.method, k.kcal, w.exercises.length, w.source, w.externalId, w.importedAt, w.note]); }); });
+    return Csv.build(head, rows);
+  },
+  exercises(){
+    const head = [['date'],['session_id'],['exercise_index'],['exercise_name',1],['weight_kg'],['reps'],['sets'],['volume_kg']];
+    const rows = [];
+    Csv.dates().forEach(d => Store.getDay(d).workouts.forEach(w => w.exercises.forEach((e,i) => rows.push([d, w.id, i+1, e.name, e.weightKg, e.reps, e.sets, e.weightKg*e.reps*e.sets]))));
+    return Csv.build(head, rows);
+  }
+};
 function readFile(input, cb){
   const f = input.files[0]; input.value=''; if(!f) return;
   if (f.size > 5e6) return toast('ファイルが大きすぎます', true);
@@ -623,6 +668,7 @@ const actions = {
     persist(); toast('設定を保存しました');
   },
   'export-all'(){ download('kcal-backup-'+Calc.today()+'.json', Store.exportAll()); },
+  'csv'(el){ const k = el.dataset.id; download(`kcal-${k}-${Calc.today()}.csv`, Csv[k](), 'text/csv'); return 'noRender'; },
   'import-all'(){ document.getElementById('allfile').click(); return 'noRender'; },
   reset(){ if(!confirm('全データを削除します。元に戻せません。よろしいですか？')) return; if(!confirm('本当に削除しますか？（先にバックアップ推奨）')) return; Store.replaceAll(Store.defaults()); ui.mform=newMform(); ui.wform=newWform(); ui.fform=newFform(); toast('削除しました'); },
   selftest(){
