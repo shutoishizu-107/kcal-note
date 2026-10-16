@@ -309,7 +309,7 @@ const sgn = v => (v>0?'+':v<0?'−':'±') + fmt(Math.abs(v));
 const WD = ['日','月','火','水','木','金','土'];
 const dlabel = s => { const d = Calc.parseDate(s); return `${d.getMonth()+1}/${d.getDate()}(${WD[d.getDay()]})`; };
 
-const ui = {tab:'dash', date:Calc.today(), dview:'chart', range:14, calMonth:null, calFor:null, mform:null, wform:null, fform:null};
+const ui = {tab:'dash', date:Calc.today(), dview:'chart', range:7, calMonth:null, calFor:null, mform:null, wform:null, fform:null};
 const newMform = () => ({meal:'breakfast', foodId:'', mode:'amount', amount:'', manualName:'', manualKcal:'', note:'', editId:null});
 const newWform = () => ({editId:null, title:'', durationMin:'', intensity:'moderate', kcalOverride:'', note:'', exercises:[{name:'',weightKg:'',reps:'',sets:''}], source:'manual', externalId:null, importedAt:null});
 const newFform = () => ({editId:null, name:'', baseAmount:'', unit:'g', kcal:'', note:''});
@@ -351,8 +351,8 @@ function viewDash(){
       <div class="note">消費カロリーと収支は推定値であり、実測値ではありません。</div></div>
     <div class="card"><h2>推移</h2>
       <div class="seg">${[['chart','グラフ'],['cal','カレンダー']].map(([k,l])=>`<button data-act="dview" data-id="${k}" class="${ui.dview===k?'on':''}">${l}</button>`).join('')}</div>
-      ${ui.dview==='cal' ? calendar() : `<div class="seg">${[7,14,30].map(n=>`<button data-act="range" data-id="${n}" class="${ui.range===n?'on':''}">${n}日</button>`).join('')}</div>${chart()}
-      <div class="small">棒は差分（上=オーバー、下=アンダー）。破線枠は暫定。“—”は未記録・情報不足で、0kcalとは区別しています。横にスワイプで過去を見られます。</div>`}</div>`;
+      ${ui.dview==='cal' ? calendar() : `<h3>直近7日間</h3>${chart()}
+      <div class="small">棒は差分（上=オーバー、下=アンダー）。破線枠は暫定。“—”は未記録・情報不足で、0kcalとは区別しています。それ以前はカレンダーで確認できます。</div>`}</div>`;
 }
 const SHORT = {over:'オーバー',under:'アンダー',maintain:'維持',provisional:'暫定',unrecorded:'未記録',insufficient:'情報不足'};
 const LBL = s => (s==='provisional'||s==='insufficient') ? '' : SHORT[s];
@@ -614,7 +614,6 @@ const posNum = (v, label, {min=0, max=Infinity, req=true, gt0=false}={}) => {
 const actions = {
   tab(el){ ui.tab = el.dataset.id; },
   dview(el){ ui.dview = el.dataset.id; },
-  range(el){ ui.range = +el.dataset.id; },
   pick(el){ ui.date = el.dataset.id; },
   'cal-prev'(){ const [y,m]=ui.calMonth.split('-').map(Number); const d=new Date(y,m-2,1); ui.calMonth=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); },
   'cal-next'(){ const [y,m]=ui.calMonth.split('-').map(Number); const d=new Date(y,m,1); ui.calMonth=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); },
