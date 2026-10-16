@@ -612,7 +612,7 @@ const actions = {
   'food-cancel'(){ ui.fform = newFform(); },
   'food-sample'(){ SAMPLE_FOODS.forEach(s => Store.data.foods.push({...s, id:Store.uid()})); persist(); toast('参考サンプルを追加しました。値を編集してください'); },
   'food-export'(){ download('foods-'+Calc.today()+'.json', JSON.stringify({type:'kcal-foods', schemaVersion:1, foods:Store.data.foods}, null, 2)); },
-  'food-import'(){ document.getElementById('foodfile').click(); },
+  'food-import'(){ document.getElementById('foodfile').click(); return 'noRender'; },
   'settings-save'(){
     const g = id => document.getElementById(id).value, act = document.querySelector('input[name=act]:checked');
     Store.data.settings = {
@@ -623,7 +623,7 @@ const actions = {
     persist(); toast('設定を保存しました');
   },
   'export-all'(){ download('kcal-backup-'+Calc.today()+'.json', Store.exportAll()); },
-  'import-all'(){ document.getElementById('allfile').click(); },
+  'import-all'(){ document.getElementById('allfile').click(); return 'noRender'; },
   reset(){ if(!confirm('全データを削除します。元に戻せません。よろしいですか？')) return; if(!confirm('本当に削除しますか？（先にバックアップ推奨）')) return; Store.replaceAll(Store.defaults()); ui.mform=newMform(); ui.wform=newWform(); ui.fform=newFform(); toast('削除しました'); },
   selftest(){
     const r = Calc.selfTest();
