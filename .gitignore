@@ -1,0 +1,5 @@
+# Hevyアカウント由来のデータ・秘密情報はコミットしない
+hevy-exercises.json
+.env
+__pycache__/
+*.tmp

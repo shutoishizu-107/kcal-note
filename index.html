@@ -87,6 +87,8 @@ details{margin:6px 0}summary{cursor:pointer;font-weight:600}
 pre{white-space:pre-wrap;font-size:.8rem;background:#f1f5f9;padding:8px;border-radius:8px}
 .exrow{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:4px;margin:4px 0}
 .exrow input{padding:7px 4px}
+.tag{display:inline-block;font-size:.7rem;padding:1px 8px;border-radius:99px;background:#eee;color:#444;margin:2px 4px 0 0}
+.tag.ok{background:#e6f6ea;color:#1b6e34}.tag.warn{background:#fff3d6;color:#8a5a00}
 #report{display:none;position:fixed;inset:0;background:#fff;overflow:auto;z-index:20;padding:calc(12px + env(safe-area-inset-top)) 14px 40px;color:#000}
 #report.on{display:block}
 .rbar{display:flex;gap:8px;margin-bottom:12px;position:sticky;top:0;background:#fff;padding:6px 0}
@@ -192,7 +194,7 @@ const Calc = (() => {
     eq('1食500kcal × 倍率0.5 = 250kcal', scaleKcal(500,1,0.5), 250);
     eq('卵 71kcal/個 × 2個 = 142kcal', scaleKcal(71,1,2), 142);
     eq('Mifflin 男性30歳 70kg 175cm = 1648.75', bmr({weightKg:70,heightCm:175,age:30,sex:'male'}), 1648.75);
-    eq('Mifflin 女性30歳 55kg 160cm = 1264', bmr({weightKg:55,heightCm:160,age:30,sex:'female'}), 1264);
+    eq('Mifflin 女性30歳 55kg 160cm = 550+1000-150-161 = 1239', bmr({weightKg:55,heightCm:160,age:30,sex:'female'}), 1239);
     eq('筋トレ MET5.0 60分 70kg = (5-1)×70×1 = 280kcal', workoutKcal({durationMin:60,metUsed:5},70).kcal, 280);
     eq('手入力の消費kcalが優先される', workoutKcal({durationMin:60,metUsed:5,kcalOverride:300},70).kcal, 300);
     is('誕生日前は年齢-1', ageOn('1990-12-31','2026-10-16'), 35);
@@ -222,7 +224,7 @@ const Calc = (() => {
 const Store = (() => {
   const KEY = 'kcal-tracker-v1';
   const SCHEMA = 1;
-  const defaults = () => ({schemaVersion:SCHEMA, settings:{heightCm:null, sex:'', birthDate:'', activityId:'', tolerance:100}, weights:{}, foods:[], days:{}});
+  const defaults = () => ({schemaVersion:SCHEMA, settings:{heightCm:null, sex:'', birthDate:'', activityId:'', tolerance:100}, weights:{}, foods:[], exercises:[], days:{}});
   let data = defaults();
   let memoryOnly = false;
 
@@ -255,8 +257,8 @@ const Store = (() => {
       }
       for (const w of day.workouts||[]) {
         if (!isNum(w.durationMin,0,1440) || !isNum(w.metUsed,1,30) || (w.kcalOverride!=null && !isNum(w.kcalOverride,0,20000))) bad('筋トレ記録が不正です: '+k);
-        const exs = (w.exercises||[]).map(e => { if(!isNum(e.weightKg,0,1000)||!isNum(e.reps,0,1000)||!isNum(e.sets,0,1000)) bad('種目が不正です: '+k); return {name:str(e.name), weightKg:e.weightKg, reps:e.reps, sets:e.sets}; });
-        nd.workouts.push({id:str(w.id,40)||uid(), source:str(w.source,40)||'manual', externalId:w.externalId?str(w.externalId,100):null, importedAt:w.importedAt?str(w.importedAt,40):null,
+        const exs = (w.exercises||[]).map(e => { if(!isNum(e.weightKg,0,1000)||!isNum(e.reps,0,1000)||!isNum(e.sets,0,1000)) bad('種目が不正です: '+k); return {name:str(e.name), weightKg:e.weightKg, reps:e.reps, sets:e.sets, exerciseId:e.exerciseId?str(e.exerciseId,60):null, hevyTemplateId:e.hevyTemplateId?str(e.hevyTemplateId,100):null}; });
+        nd.workouts.push({id:str(w.id,40)||uid(), source:str(w.source,40)||'manual', externalId:w.externalId?str(w.externalId,100):null, importedAt:w.importedAt?str(w.importedAt,40):null, externalUpdatedAt:w.externalUpdatedAt?str(w.externalUpdatedAt,40):null,
           title:str(w.title), durationMin:w.durationMin, intensity:str(w.intensity,20), metUsed:w.metUsed, kcalOverride:w.kcalOverride??null, exercises:exs, note:str(w.note,500)});
       }
       if (day.cond) {
@@ -266,6 +268,9 @@ const Store = (() => {
       }
       d.days[k] = nd;
     }
+    if (o.exercises!=null && !Array.isArray(o.exercises)) bad('種目マスタが不正です');
+    const seenEx = new Set();
+    d.exercises = (o.exercises||[]).map(e => { const x = Ex.sanitizeEntry(e, bad); if (seenEx.has(x.id)) bad('種目マスタIDが重複しています'); seenEx.add(x.id); return x; });
     return d;
   }
   function validateFood(f, bad){
@@ -324,6 +329,241 @@ const Store = (() => {
 })();
 </script>
 
+<!-- ============ 種目マスタ・Hevy対応モジュール（DOM非依存） ============ -->
+<script id="ex-js">
+const Ex = (() => {
+  const FORMAT = 'hevy-exercise-templates';
+  const SRC_NAME = '2024 Adult Compendium of Physical Activities';
+  const SRC_URL = 'https://pacompendium.com/conditioning-exercise/';
+  // 公式Compendium(Conditioning Exercise)の該当コード。種目単体のMETではなく「活動カテゴリ」の値。
+  const CATALOG = [
+    {code:'02050', met:6.0, label:'レジスタンス（フリーウェイト等）、パワーリフティング/ボディビル、高強度'},
+    {code:'02052', met:5.0, label:'レジスタンス、スクワット・デッドリフト、ゆっくり〜爆発的'},
+    {code:'02054', met:3.5, label:'レジスタンス、複数種目、8〜15回、負荷を変えながら'},
+    {code:'02055', met:5.8, label:'レジスタンス、サーキット・交互スーパーセット'},
+    {code:'02056', met:3.0, label:'自重レジスタンス、一般'},
+    {code:'02057', met:6.5, label:'自重レジスタンス、高強度'}
+  ];
+  const TIME_DEF = 'カテゴリ全体に対する平均的な値。種目単独の動作時間・休憩の扱いは未検証';
+  const str = (v, max=200) => typeof v==='string' ? v.slice(0,max) : '';
+  const norm = s => String(s||'').normalize('NFKC').toLowerCase();
+
+  const EQ = {barbell:['barbell','バーベル'], dumbbell:['dumbbell','ダンベル'], machine:['machine','マシン'], kettlebell:['kettlebell','ケトルベル'],
+    resistance_band:['resistance band','バンド','チューブ'], suspension:['suspension','trx','サスペンション'], plate:['plate','プレート'], none:['bodyweight','body weight','自重']};
+  const SMITH = ['smith','スミス'];
+  const EQ_STOP = new Set(['barbell','バーベル','dumbbell','ダンベル','machine','マシン','kettlebell','ケトルベル','band','バンド','チューブ','suspension','trx','サスペンション','plate','プレート','bodyweight','自重','smith','スミス']);
+  const detectEquip = t => {
+    t = norm(t);
+    if (SMITH.some(w=>t.includes(w))) return 'smith';
+    for (const [k, ws] of Object.entries(EQ)) if (ws.some(w=>t.includes(w))) return k;
+    return null;
+  };
+  const tokens = s => norm(s).split(/[^\p{L}\p{N}]+/u).filter(t => t.length>=2 && !EQ_STOP.has(t));
+
+  const entryKey = h => h.isCustom ? `hevy-custom:${h.accountKey||'unknown'}:${h.templateId}` : `hevy:${h.templateId}`;
+  const displayOf = e => e.displayName || (e.hevy ? e.hevy.title : e.name) || '';
+  const namesOf = e => [e.hevy ? e.hevy.title : e.name, e.displayName, ...(e.aliases||[])].filter(Boolean);
+
+  function parseFile(o){
+    const bad = m => { throw new Error(m); };
+    if (!o || typeof o!=='object' || Array.isArray(o)) bad('JSONの形式が不正です');
+    if (o.format !== FORMAT) bad('Hevy種目JSONではありません（format が一致しません）');
+    if (o.schemaVersion !== 1) bad('対応していないバージョンです（schemaVersion='+o.schemaVersion+'）');
+    if (!Array.isArray(o.exercises)) bad('exercises 配列がありません');
+    if (o.exercises.length > 20000) bad('件数が多すぎます');
+    if (o.fetchedAt!=null && (typeof o.fetchedAt!=='string' || isNaN(Date.parse(o.fetchedAt)))) bad('fetchedAt が不正です');
+    const seen = new Set(), items = [];
+    o.exercises.forEach((x, i) => {
+      const n = i+1;
+      if (!x || typeof x!=='object' || Array.isArray(x)) bad(`${n}件目: 形式が不正です`);
+      if (typeof x.hevyId!=='string' || !x.hevyId.trim() || x.hevyId.length>100) bad(`${n}件目: hevyId がありません`);
+      if (typeof x.title!=='string' || !x.title.trim()) bad(`${n}件目: title がありません`);
+      for (const k of ['type','primaryMuscleGroup','equipment','thumbnailUrl']) if (x[k]!=null && typeof x[k]!=='string') bad(`${n}件目: ${k} が不正です`);
+      if (x.secondaryMuscleGroups!=null && !(Array.isArray(x.secondaryMuscleGroups) && x.secondaryMuscleGroups.every(s=>typeof s==='string'))) bad(`${n}件目: secondaryMuscleGroups が不正です`);
+      if (x.isCustom!=null && typeof x.isCustom!=='boolean') bad(`${n}件目: isCustom が不正です`);
+      let extra = (x.extra && typeof x.extra==='object' && !Array.isArray(x.extra)) ? x.extra : {};
+      if (JSON.stringify(extra).length > 2000) extra = {_truncated:true};
+      const h = {templateId:x.hevyId.trim(), title:str(x.title), type:x.type||null, primaryMuscleGroup:x.primaryMuscleGroup||null,
+        secondaryMuscleGroups:(x.secondaryMuscleGroups||[]).map(s=>str(s,40)), equipment:x.equipment||null, isCustom:!!x.isCustom,
+        thumbnailUrl:(typeof x.thumbnailUrl==='string' && /^https:\/\//.test(x.thumbnailUrl)) ? x.thumbnailUrl.slice(0,500) : null,
+        extra, accountKey:o.accountKey ? str(o.accountKey,40) : null};
+      const key = entryKey(h);
+      if (seen.has(key)) bad(`${n}件目: 種目IDが重複しています（${h.templateId}）`);
+      seen.add(key); items.push(h);
+    });
+    return {items, meta:{fetchedAt:o.fetchedAt||null, count:items.length, sample:!!o.sampleData, notice:str(o.notice,300)}};
+  }
+  const snap = h => JSON.stringify([h.templateId,h.title,h.type,h.primaryMuscleGroup,h.secondaryMuscleGroups,h.equipment,h.isCustom,h.thumbnailUrl,h.extra,h.accountKey]);
+
+  function planImport(parsed, exercises){
+    const byKey = new Map(exercises.filter(e=>e.source==='hevy').map(e=>[e.key, e]));
+    const add = [], update = [], same = [], seen = new Set();
+    for (const h of parsed.items) {
+      const key = entryKey(h); seen.add(key);
+      const cur = byKey.get(key);
+      if (!cur) add.push({key, h});
+      else if (snap(cur.hevy) !== snap(h)) update.push({key, h, entry:cur});
+      else same.push({h, entry:cur});
+    }
+    const missing = [...byKey.values()].filter(e => !seen.has(e.key));
+    return {add, update, same, missing, sample:parsed.meta.sample, fetchedAt:parsed.meta.fetchedAt};
+  }
+  // 追加・更新のみ。削除はしない。表示名・別名・推定方式・手動対応は触らない。
+  function applyImport(plan, exercises, uid, fetchedAt){
+    const at = fetchedAt || plan.fetchedAt || new Date().toISOString();
+    const mark = h => ({...h, fetchedAt:at, inLatest:true, sample:!!plan.sample});
+    for (const a of plan.add) exercises.push({id:'ex_'+uid(), source:'hevy', key:a.key, name:'', displayName:'', aliases:[], hevy:mark(a.h), estimation:{method:'unset'}, link:null});
+    for (const u of plan.update) u.entry.hevy = mark(u.h);
+    for (const s of plan.same) s.entry.hevy = mark(s.h);
+    for (const m of plan.missing) m.hevy.inLatest = false;
+  }
+
+  function sanitizeEntry(e, bad){
+    if (!e || typeof e!=='object') bad('種目マスタの形式が不正です');
+    if (e.source!=='manual' && e.source!=='hevy') bad('種目の取得元が不正です');
+    const id = str(e.id,60); if (!id) bad('種目IDがありません');
+    const out = {id, source:e.source, key:str(e.key,200), name:str(e.name), displayName:str(e.displayName), aliases:Array.isArray(e.aliases)?e.aliases.map(a=>str(a,100)).filter(Boolean).slice(0,20):[], hevy:null, estimation:{method:'unset'}, link:null};
+    if (e.source==='hevy') {
+      const h = e.hevy;
+      if (!h || typeof h.templateId!=='string' || !h.templateId || typeof h.title!=='string') bad('Hevy種目情報が不正です');
+      out.hevy = {templateId:str(h.templateId,100), title:str(h.title), type:h.type?str(h.type,40):null, primaryMuscleGroup:h.primaryMuscleGroup?str(h.primaryMuscleGroup,40):null,
+        secondaryMuscleGroups:Array.isArray(h.secondaryMuscleGroups)?h.secondaryMuscleGroups.map(s=>str(s,40)).filter(Boolean):[], equipment:h.equipment?str(h.equipment,40):null, isCustom:!!h.isCustom,
+        thumbnailUrl:(typeof h.thumbnailUrl==='string' && /^https:\/\//.test(h.thumbnailUrl))?h.thumbnailUrl.slice(0,500):null,
+        extra:(h.extra && typeof h.extra==='object' && !Array.isArray(h.extra))?h.extra:{}, accountKey:h.accountKey?str(h.accountKey,40):null,
+        fetchedAt:h.fetchedAt?str(h.fetchedAt,40):null, inLatest:h.inLatest!==false, sample:!!h.sample};
+      if (!out.key) out.key = entryKey(out.hevy);
+    } else if (!out.name) bad('手入力種目の名前がありません');
+    const s = e.estimation;
+    if (s && (s.method==='category_met' || s.method==='user_met')) {
+      if (!(typeof s.met==='number' && s.met>=1 && s.met<=30)) bad('種目のMET値が不正です');
+      out.estimation = s.method==='category_met'
+        ? {method:'category_met', basis:'compendium', code:str(s.code,20), met:s.met, categoryLabel:str(s.categoryLabel), sourceName:str(s.sourceName), sourceUrl:str(s.sourceUrl,300), mapping:'generic_category', energyBasis:'gross_met', timeDefinition:str(s.timeDefinition,300)}
+        : {method:'user_met', basis:'user', met:s.met, note:str(s.note,300)};
+    }
+    if (e.link && e.link.state==='confirmed' && e.link.hevyKey) out.link = {state:'confirmed', hevyKey:str(e.link.hevyKey,200), confirmedAt:str(e.link.confirmedAt,40)};
+    return out;
+  }
+
+  const catalogEstimation = code => {
+    const c = CATALOG.find(x=>x.code===code); if (!c) return null;
+    return {method:'category_met', basis:'compendium', code:c.code, met:c.met, categoryLabel:c.label, sourceName:SRC_NAME, sourceUrl:SRC_URL, mapping:'generic_category', energyBasis:'gross_met', timeDefinition:TIME_DEF};
+  };
+  const userEstimation = met => ({method:'user_met', basis:'user', met, note:'ユーザー独自設定（出典なし）'});
+  const estimationMet = est => (est && est.method!=='unset' && typeof est.met==='number') ? est.met : null; // 未設定は 0 ではなく null
+  const estimationLabel = est => !est || est.method==='unset' ? '推定方式未設定'
+    : est.method==='category_met' ? `カテゴリMET ${est.met}（Compendium ${est.code}・汎用カテゴリへの対応）` : `ユーザー設定MET ${est.met}（出典なし）`;
+
+  function resolveName(name, exercises){
+    const n = norm(name).trim(); if (!n) return {entry:null, ambiguous:false};
+    const hits = exercises.filter(e => namesOf(e).some(x => norm(x).trim()===n));
+    if (hits.length===1) return {entry:hits[0], ambiguous:false};
+    return {entry:null, ambiguous:hits.length>1};
+  }
+  function effective(entry, exercises){
+    if (entry.estimation && entry.estimation.method!=='unset') return {est:entry.estimation, via:'self'};
+    if (entry.link && entry.link.state==='confirmed') {
+      const t = exercises.find(x=>x.key===entry.link.hevyKey);
+      if (t && t.estimation && t.estimation.method!=='unset') return {est:t.estimation, via:'linked'};
+    }
+    return {est:{method:'unset'}, via:'none'};
+  }
+  const labelFor = (name, exercises) => {
+    const {entry, ambiguous} = resolveName(name, exercises);
+    if (!entry) return ambiguous ? '推定方式未設定（種目名が複数のマスタと一致）' : '推定方式未設定（種目マスタ未登録）';
+    return estimationLabel(effective(entry, exercises).est);
+  };
+
+  const candEquip = e => detectEquip(e.hevy.title)==='smith' ? 'smith' : ((e.hevy.equipment && e.hevy.equipment!=='other') ? e.hevy.equipment : detectEquip(e.hevy.title));
+  // 名前と器具の両方で絞る。器具が違う/確認できない候補は出さない。自動確定はしない。
+  function candidates(query, exercises, limit=5){
+    const q = tokens(query), qe = detectEquip(query), out = [];
+    if (!q.length) return out;
+    for (const e of exercises) {
+      if (e.source!=='hevy') continue;
+      const ce = candEquip(e);
+      if (qe && qe!==ce) continue;
+      let best = 0;
+      for (const nm of namesOf(e)) {
+        const t = tokens(nm), inter = q.filter(x=>t.includes(x)).length, union = new Set([...q,...t]).size;
+        best = Math.max(best, union ? inter/union : 0);
+      }
+      if (best >= 0.34) out.push({entry:e, score:best, equip:qe?'match':'unspecified'});
+    }
+    return out.sort((a,b)=>b.score-a.score).slice(0, limit);
+  }
+  function search(text, exercises, limit=20){
+    const q = norm(text).trim(); if (!q) return [];
+    return exercises.filter(e=>e.source==='hevy' && namesOf(e).some(n=>norm(n).includes(q))).slice(0, limit).map(e=>({entry:e, score:null, equip:null}));
+  }
+  function recordNames(days){
+    const m = new Map();
+    for (const d of Object.values(days)) for (const w of d.workouts) for (const e of w.exercises) { const n = (e.name||'').trim(); if (n) m.set(n, (m.get(n)||0)+1); }
+    return m;
+  }
+  const manualFor = (name, exercises) => exercises.find(e => e.source==='manual' && namesOf(e).some(x=>norm(x).trim()===norm(name).trim()));
+  function linkState(name, exercises){
+    const m = manualFor(name, exercises);
+    if (m && m.link && m.link.state==='confirmed') {
+      const t = exercises.find(x=>x.key===m.link.hevyKey);
+      if (t) return {state:'confirmed', target:t};
+    }
+    const c = candidates(name, exercises);
+    return c.length ? {state:'candidate', cands:c} : {state:'unmapped'};
+  }
+  function confirmLink(name, hevyKey, exercises, uid){
+    const target = exercises.find(x=>x.key===hevyKey && x.source==='hevy'); if (!target) throw new Error('対応先のHevy種目が見つかりません');
+    let m = manualFor(name, exercises);
+    if (!m) { m = {id:'ex_'+uid(), source:'manual', key:'', name:name.trim(), displayName:'', aliases:[], hevy:null, estimation:{method:'unset'}, link:null}; exercises.push(m); }
+    m.link = {state:'confirmed', hevyKey, confirmedAt:new Date().toISOString()};
+    return m;
+  }
+  function unlink(name, exercises){ const m = manualFor(name, exercises); if (m) m.link = null; }
+
+  function selfTest(){
+    const res = [], ok = (n,c,d='')=>res.push({name:n, ok:!!c, detail:d});
+    let n = 0; const uid = () => 'u'+(++n);
+    const mk = (id, title, o={}) => ({hevyId:id, title, type:'weight_reps', primaryMuscleGroup:'chest', secondaryMuscleGroups:[], equipment:'barbell', isCustom:false, thumbnailUrl:null, extra:{}, ...o});
+    const file = (list, o={}) => ({format:FORMAT, schemaVersion:1, fetchedAt:'2026-01-01T00:00:00Z', accountKey:'acct1', exercises:list, ...o});
+    const throws = f => { try { f(); return false; } catch (e) { return true; } };
+    const list3 = [mk('TEST-1','Test Bench Press (Barbell)'), mk('TEST-2','Test Bench Press (Dumbbell)',{equipment:'dumbbell'}), mk('TEST-3','Test Smith Machine Bench Press',{equipment:'machine'})];
+    ok('不正JSON: format違い・ID欠落・ID重複・型不正は拒否', throws(()=>parseFile({...file(list3), format:'x'})) && throws(()=>parseFile(file([{title:'a'}]))) && throws(()=>parseFile(file([mk('A','a'),mk('A','b')]))) && throws(()=>parseFile(file([mk('A','a',{isCustom:'yes'})]))));
+    const ex = [];
+    const p1 = planImport(parseFile(file(list3)), ex);
+    ok('初回: 3件すべて追加扱い', p1.add.length===3 && p1.update.length===0);
+    applyImport(p1, ex, uid);
+    const p2 = planImport(parseFile(file(list3)), ex); applyImport(p2, ex, uid);
+    ok('同じJSONを2回取り込んでも重複しない', ex.length===3 && p2.add.length===0 && p2.update.length===0 && p2.same.length===3, `件数 ${ex.length}`);
+    const e1 = ex.find(x=>x.hevy.templateId==='TEST-1'); e1.displayName = 'ベンチ'; e1.aliases = ['BP']; e1.estimation = catalogEstimation('02052');
+    const man = confirmLink('ベンチプレス', e1.key, ex, uid); const manId = man.id;
+    const renamed = [mk('TEST-1','Test Bench Press (Barbell) v2'), list3[1], list3[2]];
+    const p3 = planImport(parseFile(file(renamed)), ex); applyImport(p3, ex, uid);
+    ok('Hevy側の名前変更後もID対応・表示名・推定方式・手動対応を維持', p3.update.length===1 && e1.hevy.title.endsWith('v2') && e1.displayName==='ベンチ' && e1.estimation.code==='02052' && linkState('ベンチプレス', ex).state==='confirmed' && ex.find(x=>x.id===manId).link.hevyKey===e1.key);
+    const p4 = planImport(parseFile(file([list3[0]])), ex); applyImport(p4, ex, uid);
+    ok('一覧から消えた種目も削除せず保持', ex.length===4 && p4.missing.length===2 && ex.filter(x=>x.hevy&&!x.hevy.inLatest).length===2);
+    ok('手入力種目は取り込みで消えない', ex.some(x=>x.source==='manual' && x.name==='ベンチプレス'));
+    const ex2 = [];
+    applyImport(planImport(parseFile(file([mk('C1','My Custom',{isCustom:true})], {accountKey:'accA'})), ex2), ex2, uid);
+    applyImport(planImport(parseFile(file([mk('C1','Other Account Custom',{isCustom:true})], {accountKey:'accB'})), ex2), ex2, uid);
+    ok('カスタム種目IDはアカウントごとに別扱い（衝突しない）', ex2.length===2 && ex2[0].key!==ex2[1].key);
+    const c1 = candidates('Test Bench Press (Barbell)', ex);
+    ok('器具が違う候補（ダンベル・スミス）を同一視しない', c1.length===1 && c1[0].entry.hevy.templateId==='TEST-1', c1.map(c=>c.entry.hevy.templateId).join(','));
+    const exAll = []; applyImport(planImport(parseFile(file(list3)), exAll), exAll, uid);
+    const c2 = candidates('Test Bench Press', exAll);
+    ok('器具未指定の名前は候補が複数出て、自動確定されない', c2.length===3 && c2.every(c=>c.equip==='unspecified') && linkState('Test Bench Press', exAll).state==='candidate');
+    ok('名前だけ一致でも「未対応」は確定扱いにならない', linkState('全く別の種目', exAll).state==='unmapped');
+    ok('推定方式未設定はnull（0kcal扱いしない）', estimationMet({method:'unset'})===null && labelFor('未登録の種目', exAll).includes('未設定'));
+    ok('カテゴリMETは出典・コード付き、汎用カテゴリ対応と明示', catalogEstimation('02052').met===5.0 && catalogEstimation('02052').mapping==='generic_category' && catalogEstimation('02052').sourceUrl.includes('pacompendium'));
+    const days = {'2026-01-01':{workouts:[{exercises:[{name:'ベンチプレス',weightKg:60,reps:8,sets:3}]}]}}, before = JSON.stringify(days);
+    applyImport(planImport(parseFile(file(list3)), ex), ex, uid);
+    ok('取り込み・対応づけで既存の記録は変化しない', JSON.stringify(days)===before);
+    ok('保存形式の往復（sanitize）で内容が保たれる', JSON.stringify(ex.map(e=>sanitizeEntry(e, m=>{throw new Error(m);})).map(e=>e.id))===JSON.stringify(ex.map(e=>e.id)));
+    return res;
+  }
+  return {FORMAT, CATALOG, SRC_NAME, SRC_URL, TIME_DEF, entryKey, displayOf, namesOf, parseFile, planImport, applyImport, sanitizeEntry, catalogEstimation, userEstimation, estimationMet, estimationLabel,
+    resolveName, effective, labelFor, candidates, search, recordNames, manualFor, linkState, confirmLink, unlink, detectEquip, selfTest};
+})();
+</script>
+
 <!-- ============ 画面モジュール ============ -->
 <script id="view-js">
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -333,7 +573,7 @@ const sgn = v => (v>0?'+':v<0?'−':'±') + fmt(Math.abs(v));
 const WD = ['日','月','火','水','木','金','土'];
 const dlabel = s => { const d = Calc.parseDate(s); return `${d.getMonth()+1}/${d.getDate()}(${WD[d.getDay()]})`; };
 
-const ui = {tab:'dash', date:Calc.today(), dview:'chart', aview:'bal', lift:'', rep:{period:'30', detail:true, body:true}, range:7, calMonth:null, calFor:null, mform:null, wform:null, fform:null};
+const ui = {tab:'dash', date:Calc.today(), mview:'food', exq:'', exfilter:'all', exform:null, exImport:null, exmap:null, exmapq:'', dview:'chart', aview:'bal', lift:'', rep:{period:'30', detail:true, body:true}, range:7, calMonth:null, calFor:null, mform:null, wform:null, fform:null};
 const newMform = () => ({meal:'breakfast', foodId:'', mode:'amount', amount:'', manualName:'', manualKcal:'', note:'', editId:null});
 const newWform = () => ({editId:null, title:'', durationMin:'', intensity:'moderate', kcalOverride:'', note:'', exercises:[{name:'',weightKg:'',reps:'',sets:''}], source:'manual', externalId:null, importedAt:null});
 const newFform = () => ({editId:null, name:'', baseAmount:'', unit:'g', kcal:'', note:''});
@@ -487,6 +727,7 @@ function viewDaily(){
     const k = Calc.workoutKcal(x, cond.weightKg), it = Calc.INTENSITY.find(i=>i.id===x.intensity);
     return `<div class="item"><div><b>${esc(x.title||'(名称なし)')}</b> <span class="small">${fmt(x.durationMin)}分・${esc(it?it.label:'')}・MET ${x.metUsed}</span><br>
       <span class="small">${x.exercises.map(e=>`${esc(e.name)} ${e.weightKg}kg×${e.reps}回×${e.sets}set`).join(' / ')}</span><br>
+      ${x.exercises.length?`<span class="small">種目別の推定方式（参考表示・合計には未加算）: ${x.exercises.map(e=>`${esc(e.name)}＝${esc(Ex.labelFor(e.name, Store.data.exercises))}`).join(' / ')}</span><br>`:''}
       <span class="small">消費 ${cond.weightKg||k.method==='manual'?fmt(k.kcal)+' kcal（'+(k.method==='manual'?'手入力':'推定')+'）':'体重未入力のため算出不可'}${x.source!=='manual'?' ・取込元:'+esc(x.source):''}${x.note?' ・ '+esc(x.note):''}</span></div>
       <div class="acts"><button class="sm" data-act="w-edit" data-id="${x.id}">編集</button><button class="sm danger" data-act="w-del" data-id="${x.id}">削除</button></div></div>`;
   }).join('') || '<div class="small">筋トレなし</div>';
@@ -526,8 +767,9 @@ function viewDaily(){
     <div><label>運動強度</label><select data-f="wform.intensity" data-rerender>${Calc.INTENSITY.map(i=>`<option value="${i.id}" ${wf.intensity===i.id?'selected':''}>${i.label}（MET ${i.met}）</option>`).join('')}</select></div></div>
     <div class="small">${esc(it.desc)}（Compendium ${it.code}）</div>
     <h3>種目（記録用）</h3>
+    <datalist id="exnames">${Store.data.exercises.flatMap(e=>Ex.namesOf(e)).filter((v,i,a)=>a.indexOf(v)===i).slice(0,600).map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
     <div class="small exrow"><span>種目名</span><span>kg</span><span>回</span><span>set</span><span></span></div>
-    ${wf.exercises.map((e,i)=>`<div class="exrow"><input data-f="wform.exercises.${i}.name" value="${esc(e.name)}" placeholder="ベンチプレス"><input type="number" inputmode="decimal" step="any" data-f="wform.exercises.${i}.weightKg" value="${esc(e.weightKg)}"><input type="number" inputmode="numeric" data-f="wform.exercises.${i}.reps" value="${esc(e.reps)}"><input type="number" inputmode="numeric" data-f="wform.exercises.${i}.sets" value="${esc(e.sets)}"><button class="sm danger" data-act="ex-del" data-i="${i}" aria-label="削除">×</button></div>`).join('')}
+    ${wf.exercises.map((e,i)=>`<div class="exrow"><input data-f="wform.exercises.${i}.name" list="exnames" value="${esc(e.name)}" placeholder="ベンチプレス"><input type="number" inputmode="decimal" step="any" data-f="wform.exercises.${i}.weightKg" value="${esc(e.weightKg)}"><input type="number" inputmode="numeric" data-f="wform.exercises.${i}.reps" value="${esc(e.reps)}"><input type="number" inputmode="numeric" data-f="wform.exercises.${i}.sets" value="${esc(e.sets)}"><button class="sm danger" data-act="ex-del" data-i="${i}" aria-label="削除">×</button></div>`).join('')}
     <div class="btns" style="margin-top:4px"><button class="sm" data-act="ex-add">＋ 種目を追加</button></div>
     <label>消費カロリーの手入力・補正（任意・入力すると推定より優先）</label><input type="number" inputmode="decimal" step="any" data-f="wform.kcalOverride" value="${esc(wf.kcalOverride)}" placeholder="空欄なら推定式を使用">
     <label>メモ（任意）</label><input data-f="wform.note" value="${esc(wf.note)}" maxlength="200">
@@ -552,7 +794,92 @@ function updatePreview(){
 }
 
 /* ---------- マスタ ---------- */
+/* ---------- マスタ（食品 / 筋トレ種目） ---------- */
 function viewMaster(){
+  const seg = `<div class="seg" style="margin:0 0 12px">${[['food','食品・メニュー'],['ex','筋トレ種目']].map(([k,l])=>`<button data-act="mview" data-id="${k}" class="${ui.mview===k?'on':''}">${l}</button>`).join('')}</div>`;
+  return seg + (ui.mview==='ex' ? viewExMaster() : viewFoods());
+}
+const fdt = s => s ? esc(String(s).slice(0,19).replace('T',' '))+'(UTC)' : '—';
+function exTags(e){
+  const t = [];
+  if (e.source==='hevy') { t.push('<span class="tag ok">Hevy</span>'); if (e.hevy.isCustom) t.push('<span class="tag">カスタム(アカウント由来)</span>'); if (e.hevy.sample) t.push('<span class="tag warn">架空サンプル</span>'); if (!e.hevy.inLatest) t.push('<span class="tag">最新JSONに無し(保持)</span>'); }
+  else t.push('<span class="tag">手入力</span>');
+  const eff = Ex.effective(e, Store.data.exercises);
+  t.push(`<span class="tag ${eff.est.method==='unset'?'warn':'ok'}">${esc(Ex.estimationLabel(eff.est))}${eff.via==='linked'?'（Hevy対応先の設定）':''}</span>`);
+  return t.join('');
+}
+function viewExMaster(){
+  const all = Store.data.exercises, hev = all.filter(e=>e.source==='hevy'), imp = ui.exImport;
+  const last = hev.map(e=>e.hevy.fetchedAt).filter(Boolean).sort().pop();
+  let h = `<div class="card"><h2>Hevy種目マスタの取り込み</h2>
+    <div class="small">パソコンで <code>tools/fetch_hevy_exercises.py</code> を実行して作る <code>hevy-exercises.json</code> を選びます（アプリからHevyのAPIは呼びません）。同じファイルを再度取り込んでも重複しません。</div>
+    <div class="btns"><button class="pri" data-act="ex-import-open">Hevy種目マスタを取り込む</button></div>
+    <input type="file" id="exfile" accept="application/json,.json" hidden>
+    <div class="small">取り込み済み: Hevy ${hev.length}件・最終取得 ${fdt(last)}</div>
+    ${hev.some(e=>e.hevy.sample)?'<div class="btns"><button class="danger" data-act="ex-del-sample">架空サンプル種目をすべて削除</button></div>':''}</div>`;
+  if (imp) {
+    const p = imp.plan;
+    h += `<div class="card"><h2>取り込み内容の確認</h2>
+      ${p.sample?'<div class="note err">このファイルは<b>架空のテストデータ</b>です。実際のHevy種目ではありません。</div>':''}
+      <table><tr><td>追加</td><td class="n">${p.add.length}件</td></tr><tr><td>更新（Hevy側の情報が変わった）</td><td class="n">${p.update.length}件</td></tr><tr><td>変更なし</td><td class="n">${p.same.length}件</td></tr><tr><td>ファイルに無い既存Hevy種目（削除せず保持）</td><td class="n">${p.missing.length}件</td></tr></table>
+      <div class="small">取得日時: ${fdt(imp.parsed.meta.fetchedAt)}。表示名・別名・推定方式・手動の対応、手入力種目、過去の記録は変更しません。</div>
+      <div class="btns"><button class="pri" data-act="ex-import-apply">反映する</button><button data-act="ex-import-cancel">キャンセル</button></div></div>`;
+  }
+  const f = ui.exform;
+  if (f) {
+    const entry = f.id ? all.find(e=>e.id===f.id) : null;
+    h += `<div class="card"><h2>${f.id?'種目を編集':'手入力種目を追加'}</h2>
+      ${f.source==='hevy'?`<div class="small">Hevy元の名前: <b>${esc(entry.hevy.title)}</b>・Hevy種目ID: ${esc(entry.hevy.templateId)}（表示名を変えても対応は切れません）</div>`:`<label>種目名</label><input data-f="exform.name" value="${esc(f.name)}" maxlength="100">`}
+      <label>日本語表示名（任意）</label><input data-f="exform.displayName" value="${esc(f.displayName)}" maxlength="100">
+      <label>別名（カンマ区切り、任意）</label><input data-f="exform.aliases" value="${esc(f.aliases)}" maxlength="300">
+      <h3>消費カロリー推定方式</h3>
+      <select data-f="exform.estMethod" data-rerender><option value="unset" ${f.estMethod==='unset'?'selected':''}>未設定</option><option value="category_met" ${f.estMethod==='category_met'?'selected':''}>カテゴリMET（Compendiumの活動カテゴリを選ぶ）</option><option value="user_met" ${f.estMethod==='user_met'?'selected':''}>ユーザー独自のMET（出典なし）</option></select>
+      ${f.estMethod==='category_met'?`<label>活動カテゴリ</label><select data-f="exform.estCode" data-rerender>${Ex.CATALOG.map(c=>`<option value="${c.code}" ${f.estCode===c.code?'selected':''}>${c.code} / MET ${c.met} / ${esc(c.label)}</option>`).join('')}</select>
+        <div class="small">出典: ${esc(Ex.SRC_NAME)}（<a href="${Ex.SRC_URL}" target="_blank" rel="noopener">Conditioning Exercise</a>）。この値は種目単独ではなく<b>活動カテゴリ全体の平均</b>です（汎用カテゴリへの対応）。種目単独の動作時間・休憩の扱いは未検証です。</div>`:''}
+      ${f.estMethod==='user_met'?`<label>MET値（1〜30）</label><input type="number" inputmode="decimal" step="0.1" data-f="exform.estMet" value="${esc(f.estMet)}">`:''}
+      <div class="note">器具・対象筋・種目名からMETを自動で決めることはしません。ここで設定しても<b>セッション全体の推定（合計に使う唯一の方式）には加算されません</b>（二重計上の防止）。種目ごとの時間が定義できるまでは参考表示です。</div>
+      <div class="btns"><button class="pri" data-act="ex-save">保存</button><button data-act="ex-cancel">キャンセル</button></div></div>`;
+  }
+  const q = norm0(ui.exq);
+  let rows = all.filter(e => {
+    if (ui.exfilter==='hevy' && e.source!=='hevy') return false;
+    if (ui.exfilter==='manual' && e.source!=='manual') return false;
+    if (ui.exfilter==='custom' && !(e.hevy && e.hevy.isCustom)) return false;
+    if (ui.exfilter==='unset' && Ex.effective(e, all).est.method!=='unset') return false;
+    return !q || Ex.namesOf(e).some(n=>norm0(n).includes(q)) || (e.hevy && norm0([e.hevy.equipment,e.hevy.primaryMuscleGroup].join(' ')).includes(q));
+  });
+  const total = rows.length; rows = rows.slice(0, 60);
+  h += `<div class="card"><h2>種目一覧（${all.length}件）</h2>
+    <div class="row"><input type="search" data-f="exq" data-rerender value="${esc(ui.exq)}" placeholder="名前・器具・部位で検索"><select data-f="exfilter" data-rerender>${[['all','すべて'],['hevy','Hevy'],['manual','手入力'],['custom','カスタム'],['unset','推定方式未設定']].map(([v,l])=>`<option value="${v}" ${ui.exfilter===v?'selected':''}>${l}</option>`).join('')}</select></div>
+    ${rows.map(e=>`<div class="item"><div><b>${esc(Ex.displayOf(e))}</b>${e.source==='hevy'&&e.displayName?`<div class="small">Hevy名: ${esc(e.hevy.title)}</div>`:''}
+      <div class="small">${e.hevy?esc([e.hevy.equipment,e.hevy.primaryMuscleGroup,e.hevy.type].filter(Boolean).join(' / ')):''}</div><div>${exTags(e)}</div>
+      ${e.link&&e.link.state==='confirmed'?`<div class="small">Hevy対応: ${esc((all.find(x=>x.key===e.link.hevyKey)||{hevy:{title:'(見つかりません)'}}).hevy.title)}（確認済み）</div>`:''}</div>
+      <div class="acts"><button class="sm" data-act="ex-edit" data-id="${e.id}">編集</button>${e.source==='manual'?`<button class="sm danger" data-act="ex-del" data-id="${e.id}">削除</button>`:''}</div></div>`).join('') || '<div class="small">該当なし。Hevy種目を取り込むか、手入力種目を追加してください。</div>'}
+    ${total>rows.length?`<div class="small">先頭${rows.length}件を表示（該当${total}件）。検索で絞り込んでください。</div>`:''}
+    <div class="btns"><button data-act="ex-new">手入力種目を追加</button></div></div>`;
+  const names = [...Ex.recordNames(Store.data.days).entries()].sort((a,b)=>b[1]-a[1]);
+  h += `<div class="card"><h2>既存の種目とHevy種目の対応</h2>
+    <div class="small">これまでの記録に使った種目名です。候補は名前と器具で絞り込んでいますが、<b>自動では確定しません</b>。Hevyの種目名は英語のため、日本語名の種目は「別名」に英語名を入れるか、検索で探してください。対応を確定しても、既存の記録・計算結果は変わりません。</div>
+    ${names.slice(0,100).map(([name,count])=>{
+      const s = Ex.linkState(name, all), badge = {confirmed:'<span class="tag ok">確認済み</span>', candidate:`<span class="tag warn">候補あり(${s.cands?s.cands.length:0})</span>`, unmapped:'<span class="tag">未対応</span>'}[s.state];
+      const open = ui.exmap===name;
+      return `<div class="item" style="flex-direction:column"><div style="display:flex;justify-content:space-between;gap:8px"><div style="min-width:0;overflow-wrap:anywhere"><b>${esc(name)}</b> <span class="small">${count}回</span><div>${badge}${s.state==='confirmed'?` <span class="small">→ ${esc(s.target.hevy.title)}</span>`:''}</div></div>
+        <div class="acts">${s.state==='confirmed'?`<button class="sm" data-act="ex-unlink" data-name="${esc(name)}">解除</button>`:''}<button class="sm" data-act="${open?'ex-map-close':'ex-map-open'}" data-name="${esc(name)}">${open?'閉じる':'候補・検索'}</button></div></div>
+        ${open?mapPanel(name):''}</div>`;
+    }).join('') || '<div class="small">記録に使われた種目がありません。</div>'}</div>`;
+  return h;
+}
+const norm0 = s => String(s||'').normalize('NFKC').toLowerCase().trim();
+function mapPanel(name){
+  const all = Store.data.exercises;
+  if (!all.some(e=>e.source==='hevy')) return '<div class="note">先にHevy種目マスタを取り込んでください。</div>';
+  const auto = Ex.candidates(name, all), manual = ui.exmapq.trim() ? Ex.search(ui.exmapq, all) : [];
+  const row = c => `<div class="item"><div style="min-width:0;overflow-wrap:anywhere"><b>${esc(Ex.displayOf(c.entry))}</b>${c.entry.displayName?`<div class="small">Hevy名: ${esc(c.entry.hevy.title)}</div>`:''}<div class="small">器具: ${esc(c.entry.hevy.equipment||'不明')} ・ 部位: ${esc(c.entry.hevy.primaryMuscleGroup||'不明')} ・ ${esc(c.entry.hevy.type||'')}${c.equip==='unspecified'?' ・ <b>器具未指定の名前のため器具は未確認</b>':''}</div></div><div class="acts"><button class="sm" data-act="ex-link" data-key="${esc(c.entry.key)}">これと対応づける</button></div></div>`;
+  return `<div style="margin-top:8px"><div class="small">自動候補（名前と器具で絞り込み）</div>${auto.map(row).join('') || '<div class="small">候補なし</div>'}
+    <label>Hevy種目を検索（英語名など）</label><input type="search" data-f="exmapq" data-rerender value="${esc(ui.exmapq)}" placeholder="例: bench press">${manual.map(row).join('')}</div>`;
+}
+
+function viewFoods(){
   const f = ui.fform, foods = Store.data.foods;
   return `<div class="card"><h2>${f.editId?'マスタを編集':'マスタを追加'}</h2>
     <label>食品・メニュー名</label><input data-f="fform.name" value="${esc(f.name)}" maxlength="100" placeholder="例: ごはん / いつもの朝食">
@@ -621,7 +948,7 @@ function viewSettings(){
       <div class="small">MET（総消費÷安静時）から安静分の1METを引いた正味分のみを加算するため、基礎代謝との二重計上を避けています（1MET≈1kcal/kg/時の慣例換算）。係数: ${Calc.INTENSITY.map(i=>`${i.label}=${i.met}（コード${i.code}）`).join('、')}。<br>
       出典: 2024 Adult Compendium of Physical Activities（Herrmann SD et al., J Sport Health Sci 2024）<a href="https://pacompendium.com/conditioning-exercise/" target="_blank" rel="noopener">Conditioning Exercise</a>。<br>
       適用条件: セッション全体の時間（休憩込み）に対する平均的な値で、重量・回数・セット数からは算出しません。種目ごとには加算しません。手入力の値がある場合はそちらを優先します。</div></details>
-    <details><summary>将来のHevy連携の拡張箇所</summary><div class="small">筋トレ記録は <code>source / externalId / importedAt</code> を持つ共通形式です（手入力は source='manual'）。取込処理は共通形式のリストを作り <code>Store.importWorkouts(date, list)</code> に渡すと、source+externalId で重複判定します。Hevy側のAPI・エクスポートの有無や条件は、実装時に公式情報で確認してください（本版では未実装・未確認）。</div></details>
+    <details><summary>Hevy連携の現状と拡張箇所</summary><div class="small">実装済み: <code>tools/fetch_hevy_exercises.py</code>（公式API <code>GET /v1/exercise_templates</code> のみ使用、キーは環境変数 <code>HEVY_API_KEY</code>）で作った種目JSONを、マスタ画面「筋トレ種目」から取り込めます。Hevy種目IDで更新し、再取り込みで重複しません。未実装: 履歴（<code>GET /v1/workouts</code>）の同期。記録は <code>source / externalId / importedAt / externalUpdatedAt</code> と、種目ごとの <code>exerciseId / hevyTemplateId</code> を持てる形式で、取込時は <code>Store.importWorkouts(date, list)</code> が source+externalId で重複判定します。Hevyの履歴にはワークアウト全体の開始・終了時刻はありますが、種目ごとの動作時間は含まれないため、種目別の時間は仮定しません。APIの条件はHevy公式ドキュメントで確認してください。</div></details>
   </div>
   <div class="card"><h2>計算の自己検証</h2><div class="btns" style="margin:0"><button data-act="selftest">検証を実行</button></div><div id="testout"></div></div>`;
 }
@@ -724,9 +1051,9 @@ const Csv = {
     return Csv.build(head, rows);
   },
   exercises(){
-    const head = [['date'],['session_id'],['exercise_index'],['exercise_name',1],['weight_kg'],['reps'],['sets'],['volume_kg']];
+    const head = [['date'],['session_id'],['exercise_index'],['exercise_name',1],['weight_kg'],['reps'],['sets'],['volume_kg'],['exercise_id'],['hevy_template_id']];
     const rows = [];
-    Csv.dates().forEach(d => Store.getDay(d).workouts.forEach(w => w.exercises.forEach((e,i) => rows.push([d, w.id, i+1, e.name, e.weightKg, e.reps, e.sets, e.weightKg*e.reps*e.sets]))));
+    Csv.dates().forEach(d => Store.getDay(d).workouts.forEach(w => w.exercises.forEach((e,i) => rows.push([d, w.id, i+1, e.name, e.weightKg, e.reps, e.sets, e.weightKg*e.reps*e.sets, e.exerciseId, e.hevyTemplateId]))));
     return Csv.build(head, rows);
   }
 };
@@ -742,6 +1069,13 @@ const posNum = (v, label, {min=0, max=Infinity, req=true, gt0=false}={}) => {
   return n;
 };
 
+// 名前がマスタと一意に一致した場合だけ、記録に種目ID（将来のHevy履歴取込と共通）を持たせる
+function exLink(name){
+  const all = Store.data.exercises, {entry} = Ex.resolveName(name, all);
+  if (!entry) return {exerciseId:null, hevyTemplateId:null};
+  const t = entry.source==='hevy' ? entry : (entry.link && entry.link.state==='confirmed' ? all.find(x=>x.key===entry.link.hevyKey) : null);
+  return {exerciseId:entry.id, hevyTemplateId:t ? t.hevy.templateId : null};
+}
 const actions = {
   tab(el){ ui.tab = el.dataset.id; },
   dview(el){ ui.dview = el.dataset.id; },
@@ -812,7 +1146,7 @@ const actions = {
     const ko = posNum(wf.kcalOverride,'消費カロリー',{req:false,max:20000});
     const exs = wf.exercises.filter(e=>e.name.trim()||e.weightKg!==''||e.reps!==''||e.sets!=='').map(e => {
       if (!e.name.trim()) throw new Error('種目名を入力してください');
-      return {name:e.name.trim(), weightKg:posNum(e.weightKg||0,'重量',{max:1000}), reps:posNum(e.reps||0,'回数',{max:1000}), sets:posNum(e.sets||0,'セット数',{max:1000})};
+      return {name:e.name.trim(), weightKg:posNum(e.weightKg||0,'重量',{max:1000}), reps:posNum(e.reps||0,'回数',{max:1000}), sets:posNum(e.sets||0,'セット数',{max:1000}), ...exLink(e.name)};
     });
     const old = wf.editId && Store.getDay(d).workouts.find(x=>x.id===wf.editId);
     const w = {id:wf.editId||Store.uid(), source:old?old.source:'manual', externalId:old?old.externalId:null, importedAt:old?old.importedAt:null,
@@ -840,6 +1174,55 @@ const actions = {
   'food-edit'(el){ const x = Store.data.foods.find(f=>f.id===el.dataset.id); ui.fform = {editId:x.id, name:x.name, baseAmount:x.baseAmount, unit:x.unit, kcal:x.kcal, note:x.note}; scrollTo(0,0); },
   'food-del'(el){ if(!confirm('このマスタを削除しますか？（過去の食事記録は変わりません）')) return; Store.data.foods = Store.data.foods.filter(f=>f.id!==el.dataset.id); persist(); },
   'food-cancel'(){ ui.fform = newFform(); },
+  mview(el){ ui.mview = el.dataset.id; },
+  'ex-import-open'(){ document.getElementById('exfile').click(); return 'noRender'; },
+  'ex-import-cancel'(){ ui.exImport = null; },
+  'ex-import-apply'(){
+    const imp = ui.exImport; if (!imp) return;
+    const plan = Ex.planImport(imp.parsed, Store.data.exercises);
+    Ex.applyImport(plan, Store.data.exercises, Store.uid, imp.parsed.meta.fetchedAt);
+    ui.exImport = null; persist(); toast(`反映しました（追加${plan.add.length}・更新${plan.update.length}・変更なし${plan.same.length}）`);
+  },
+  'ex-del-sample'(){
+    if (!confirm('架空サンプルとして取り込んだHevy種目をすべて削除します。よろしいですか？')) return;
+    const ex = Store.data.exercises, keys = new Set(ex.filter(e=>e.hevy&&e.hevy.sample).map(e=>e.key));
+    Store.data.exercises = ex.filter(e=>!keys.has(e.key));
+    Store.data.exercises.forEach(e => { if (e.link && keys.has(e.link.hevyKey)) e.link = null; });
+    persist(); toast(keys.size+'件削除しました');
+  },
+  'ex-new'(){ ui.exform = {id:null, source:'manual', name:'', displayName:'', aliases:'', estMethod:'unset', estCode:'02052', estMet:''}; scrollTo(0,0); },
+  'ex-edit'(el){
+    const e = Store.data.exercises.find(x=>x.id===el.dataset.id), s = e.estimation;
+    ui.exform = {id:e.id, source:e.source, name:e.name, displayName:e.displayName, aliases:(e.aliases||[]).join(', '), estMethod:s.method, estCode:s.code||'02052', estMet:s.method==='user_met'?s.met:''};
+    scrollTo(0,0);
+  },
+  'ex-cancel'(){ ui.exform = null; },
+  'ex-save'(){
+    const f = ui.exform, all = Store.data.exercises;
+    let est = {method:'unset'};
+    if (f.estMethod==='category_met') est = Ex.catalogEstimation(f.estCode) || (()=>{ throw new Error('活動カテゴリを選んでください'); })();
+    if (f.estMethod==='user_met') est = Ex.userEstimation(posNum(f.estMet, 'MET', {min:1, max:30}));
+    const aliases = f.aliases.split(/[,、]/).map(s=>s.trim()).filter(Boolean).slice(0,20);
+    if (f.id) {
+      const e = all.find(x=>x.id===f.id);
+      if (e.source==='manual') {
+        const name = f.name.trim(); if (!name) throw new Error('種目名を入力してください');
+        if (all.some(x=>x.id!==e.id && x.source==='manual' && norm0(x.name)===norm0(name))) throw new Error('同じ名前の手入力種目があります');
+        e.name = name;
+      }
+      e.displayName = f.displayName.trim(); e.aliases = aliases; e.estimation = est;
+    } else {
+      const name = f.name.trim(); if (!name) throw new Error('種目名を入力してください');
+      if (all.some(x=>x.source==='manual' && norm0(x.name)===norm0(name))) throw new Error('同じ名前の手入力種目があります');
+      all.push({id:'ex_'+Store.uid(), source:'manual', key:'', name, displayName:f.displayName.trim(), aliases, hevy:null, estimation:est, link:null});
+    }
+    ui.exform = null; persist(); toast('保存しました');
+  },
+  'ex-del'(el){ if (!confirm('この手入力種目を削除します（過去の記録は変わりません）。よろしいですか？')) return; Store.data.exercises = Store.data.exercises.filter(e=>e.id!==el.dataset.id); persist(); },
+  'ex-map-open'(el){ ui.exmap = el.dataset.name; ui.exmapq = ''; },
+  'ex-map-close'(){ ui.exmap = null; },
+  'ex-link'(el){ Ex.confirmLink(ui.exmap, el.dataset.key, Store.data.exercises, Store.uid); ui.exmap = null; persist(); toast('対応を確定しました'); },
+  'ex-unlink'(el){ Ex.unlink(el.dataset.name, Store.data.exercises); persist(); },
   'food-sample'(){ SAMPLE_FOODS.forEach(s => Store.data.foods.push({...s, id:Store.uid()})); persist(); toast('参考サンプルを追加しました。値を編集してください'); },
   'food-export'(){ download('foods-'+Calc.today()+'.json', JSON.stringify({type:'kcal-foods', schemaVersion:1, foods:Store.data.foods}, null, 2)); },
   'food-import'(){ document.getElementById('foodfile').click(); return 'noRender'; },
@@ -860,7 +1243,7 @@ const actions = {
   'import-all'(){ document.getElementById('allfile').click(); return 'noRender'; },
   reset(){ if(!confirm('全データを削除します。元に戻せません。よろしいですか？')) return; if(!confirm('本当に削除しますか？（先にバックアップ推奨）')) return; Store.replaceAll(Store.defaults()); ui.mform=newMform(); ui.wform=newWform(); ui.fform=newFform(); toast('削除しました'); },
   selftest(){
-    const r = Calc.selfTest();
+    const r = [...Calc.selfTest(), ...Ex.selfTest()];
     document.getElementById('testout').innerHTML = `<p><b>${r.filter(x=>x.ok).length}/${r.length} 合格</b></p><table>${r.map(x=>`<tr><td>${x.ok?'✔ OK':'✖ NG'}</td><td>${esc(x.name)}<div class="small">${esc(x.detail)}</div></td></tr>`).join('')}</table>`;
     return 'noRender';
   }
@@ -889,6 +1272,10 @@ document.addEventListener('change', e => {
     Store.validate(o);
     if (!confirm('現在の全データを、読み込んだバックアップで上書きします。よろしいですか？')) return;
     Store.replaceAll(o); render(); toast('復元しました');
+  });
+  if (t.id==='exfile') readFile(t, o => {
+    const parsed = Ex.parseFile(o);
+    ui.exImport = {parsed, plan:Ex.planImport(parsed, Store.data.exercises)}; render();
   });
   if (t.dataset.f==='date') { if (Calc.parseDate(t.value)) { ui.date = t.value; render(); } }
   else if (t.dataset.f && t.dataset.rerender!==undefined) { setPath(t.dataset.f, t.value); if (t.dataset.f==='mform.foodId') { ui.mform.amount=''; ui.mform.mode='amount'; } render(); }

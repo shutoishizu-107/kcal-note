@@ -1,0 +1,92 @@
+{
+  "format": "hevy-exercise-templates",
+  "schemaVersion": 1,
+  "source": "hevy-api",
+  "endpoint": "GET /v1/exercise_templates",
+  "fetchedAt": "2026-01-01T00:00:00Z",
+  "accountKey": "testaccount0001",
+  "count": 6,
+  "pagesFetched": 1,
+  "duplicatesSkipped": 0,
+  "sampleData": true,
+  "notice": "???????????????Hevy??ID????????",
+  "exercises": [
+    {
+      "hevyId": "TEST-0001",
+      "title": "Fictional Bench Press (Barbell)",
+      "type": "weight_reps",
+      "primaryMuscleGroup": "chest",
+      "secondaryMuscleGroups": [
+        "triceps",
+        "shoulders"
+      ],
+      "equipment": "barbell",
+      "isCustom": false,
+      "thumbnailUrl": null,
+      "extra": {}
+    },
+    {
+      "hevyId": "TEST-0002",
+      "title": "Fictional Bench Press (Dumbbell)",
+      "type": "weight_reps",
+      "primaryMuscleGroup": "chest",
+      "secondaryMuscleGroups": [
+        "triceps"
+      ],
+      "equipment": "dumbbell",
+      "isCustom": false,
+      "thumbnailUrl": null,
+      "extra": {}
+    },
+    {
+      "hevyId": "TEST-0003",
+      "title": "Fictional Smith Machine Bench Press",
+      "type": "weight_reps",
+      "primaryMuscleGroup": "chest",
+      "secondaryMuscleGroups": [
+        "triceps"
+      ],
+      "equipment": "machine",
+      "isCustom": false,
+      "thumbnailUrl": null,
+      "extra": {}
+    },
+    {
+      "hevyId": "TEST-0004",
+      "title": "Fictional Squat (Barbell)",
+      "type": "weight_reps",
+      "primaryMuscleGroup": "quadriceps",
+      "secondaryMuscleGroups": [
+        "glutes"
+      ],
+      "equipment": "barbell",
+      "isCustom": false,
+      "thumbnailUrl": null,
+      "extra": {}
+    },
+    {
+      "hevyId": "TEST-0005",
+      "title": "Fictional Lat Pulldown (Cable)",
+      "type": "weight_reps",
+      "primaryMuscleGroup": "lats",
+      "secondaryMuscleGroups": [
+        "biceps"
+      ],
+      "equipment": "machine",
+      "isCustom": false,
+      "thumbnailUrl": null,
+      "extra": {}
+    },
+    {
+      "hevyId": "TEST-0006",
+      "title": "Fictional Custom Cable Curl",
+      "type": "weight_reps",
+      "primaryMuscleGroup": "biceps",
+      "secondaryMuscleGroups": [],
+      "equipment": "machine",
+      "isCustom": true,
+      "thumbnailUrl": null,
+      "extra": {}
+    }
+  ]
+}
