@@ -57,6 +57,10 @@ td{overflow-wrap:anywhere}
 .tile{background:#f2f2f7;border-radius:12px;padding:10px 12px}
 .tile span{display:block;font-size:.78rem;color:var(--sub)}
 .tile b{font-size:1.5rem;font-weight:700}.tile small{color:var(--sub);margin-left:3px}
+.pfc-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:14px 0 4px}
+.pfc-tiles .tile{min-width:0;padding:8px 5px;text-align:center}
+.pfc-tiles .tile b{display:block;font-size:clamp(1rem,5vw,1.3rem);white-space:nowrap}
+.pfc-tiles .tile small{display:block;margin:2px 0 0;font-size:.75rem}
 .seg{display:flex;background:#f2f2f7;border-radius:10px;padding:2px;margin:8px 0}
 .seg button{flex:1;background:transparent;color:var(--sub);padding:6px;border-radius:8px;font-size:.9rem}
 .seg button.on{background:#fff;color:var(--tx);box-shadow:0 1px 3px rgba(0,0,0,.15)}
@@ -808,7 +812,7 @@ function viewDash(){
       <tr class="sum"><td>1日の推定総消費</td><td class="n">${fmt(b.total)} kcal</td></tr>
     </table>`;
   const cinfo = b.status==='insufficient' ? '' : (b.exerciseUncalculated ? `<div class="note">筋トレの<b>未計算 ${b.exerciseUncalculated}件</b>（運動強度が未設定）。追加消費には算入されていないため、差分は実際より多めに出る可能性があります。「日次記録」で強度を選んでください。</div>` : '') + `<div class="small">計算条件: 体重 ${fmt(cond.weightKg,1)}kg・${esc(Calc.ACTIVITY.find(a=>a.id===cond.activityId).label)}・${locked?'この日に保存済みの条件':'現在の設定（記録すると保存されます）'}</div>`;
-  const p = b.pfc, pfc = p.complete && p.ratio ? `<div class="card"><h2>PFCバランス</h2><div class="big ok">${p.score}<small> / 100</small></div><div class="small">目安 P 25% / F 25% / C 50% との近さ（栄養素のカロリー比）</div><div class="tiles"><div class="tile"><span>P</span><b>${fmt(p.protein,1)}g</b><small>${fmt(p.ratio.protein,0)}%</small></div><div class="tile"><span>F</span><b>${fmt(p.fat,1)}g</b><small>${fmt(p.ratio.fat,0)}%</small></div><div class="tile"><span>C</span><b>${fmt(p.carbs,1)}g</b><small>${fmt(p.ratio.carbs,0)}%</small></div></div><div style="display:flex;height:14px;border-radius:8px;overflow:hidden;background:#e5e7eb"><i style="width:${p.ratio.protein}%;background:#34c759"></i><i style="width:${p.ratio.fat}%;background:#f59e0b"></i><i style="width:${p.ratio.carbs}%;background:#3b82f6"></i></div></div>` : `<div class="card"><h2>PFCバランス</h2><div class="small">P・F・Cがすべて入力された食事を登録すると、栄養素の合計・比率・バランススコアを表示します。過去の食事はPFC未入力のまま保持されます。</div></div>`;
+  const p = b.pfc, pfc = p.complete && p.ratio ? `<div class="card"><h2>PFCバランス</h2><div class="big ok">${p.score}<small> / 100</small></div><div class="small">目安 P 25% / F 25% / C 50% との近さ（栄養素のカロリー比）</div><div class="pfc-tiles"><div class="tile"><span>P</span><b>${fmt(p.protein,1)}g</b><small>${fmt(p.ratio.protein,0)}%</small></div><div class="tile"><span>F</span><b>${fmt(p.fat,1)}g</b><small>${fmt(p.ratio.fat,0)}%</small></div><div class="tile"><span>C</span><b>${fmt(p.carbs,1)}g</b><small>${fmt(p.ratio.carbs,0)}%</small></div></div><div style="display:flex;height:14px;border-radius:8px;overflow:hidden;background:#e5e7eb"><i style="width:${p.ratio.protein}%;background:#34c759"></i><i style="width:${p.ratio.fat}%;background:#f59e0b"></i><i style="width:${p.ratio.carbs}%;background:#3b82f6"></i></div></div>` : `<div class="card"><h2>PFCバランス</h2><div class="small">P・F・Cがすべて入力された食事を登録すると、栄養素の合計・比率・バランススコアを表示します。過去の食事はPFC未入力のまま保持されます。</div></div>`;
   return `${dateBar()}
     <div class="card"><h2>${esc(d)} の収支</h2>${head}${rows}${cinfo}
       <div class="note">消費カロリーと収支は推定値であり、実測値ではありません。</div></div>
