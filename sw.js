@@ -1,4 +1,4 @@
-const CACHE = 'kcal-note-v8';
+const CACHE = 'kcal-note-v9';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', e => {

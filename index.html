@@ -181,7 +181,10 @@ const Calc = (() => {
     const meals = day.meals||[], workouts = day.workouts||[];
     const intake = meals.reduce((s,m)=>s+m.kcal,0);
     const missing = missingFields(cond, date);
-    const out = {intake, mealCount:meals.length, missing, status:'', diff:null, bmr:null, daily:null, exercise:null, exerciseUncalculated:0, total:null, tol:cond?cond.tol:null};
+    const pfc = meals.reduce((a,m)=>{ for(const k of ['protein','fat','carbs']) { if(typeof m[k]!=='number') a.complete=false; else a[k]+=m[k]; } return a; }, {protein:0,fat:0,carbs:0,complete:meals.length>0});
+    const macroKcal = pfc.protein*4+pfc.fat*9+pfc.carbs*4, ratio = macroKcal>0 ? {protein:pfc.protein*4/macroKcal*100,fat:pfc.fat*9/macroKcal*100,carbs:pfc.carbs*4/macroKcal*100} : null;
+    const score = ratio&&pfc.complete ? Math.max(0, Math.round(100-(Math.abs(ratio.protein-25)+Math.abs(ratio.fat-25)+Math.abs(ratio.carbs-50)))) : null;
+    const out = {intake, mealCount:meals.length, pfc:{...pfc,ratio,score}, missing, status:'', diff:null, bmr:null, daily:null, exercise:null, exerciseUncalculated:0, total:null, tol:cond?cond.tol:null};
     // 筋トレ追加消費は体重だけで算出できる。基礎代謝・収支の前提が不足して
     // いても、取得済みのHevy記録を「—」にせず表示する。
     out.exercise = workouts.reduce((s,w)=>s+workoutKcal(w, cond&&cond.weightKg).kcal,0);
@@ -273,7 +276,8 @@ const Store = (() => {
       const nd = {mealsComplete:!!day.mealsComplete, meals:[], workouts:[], cond:null};
       for (const m of day.meals||[]) {
         if (!Calc.MEALS.some(x=>x.id===m.meal) || !isNum(m.kcal) || !isNum(m.amount) || !isNum(m.baseAmount,1e-9) || !isNum(m.baseKcal)) bad('食事記録が不正です: '+k);
-        nd.meals.push({id:str(m.id,40)||uid(), meal:m.meal, foodId:m.foodId?str(m.foodId,40):null, name:str(m.name), unit:str(m.unit,20), amount:m.amount, baseAmount:m.baseAmount, baseKcal:m.baseKcal, kcal:m.kcal, note:str(m.note,500)});
+        const macro = k => m[k]==null?null:(isNum(m[k],0,100000)?m[k]:bad('PFCが不正です: '+k));
+        nd.meals.push({id:str(m.id,40)||uid(), meal:m.meal, foodId:m.foodId?str(m.foodId,40):null, name:str(m.name), unit:str(m.unit,20), amount:m.amount, baseAmount:m.baseAmount, baseKcal:m.baseKcal, kcal:m.kcal, protein:macro('protein'), fat:macro('fat'), carbs:macro('carbs'), note:str(m.note,500)});
       }
       for (const w of day.workouts||[]) {
         const isHevy = !!w.source && w.source!=='manual';
@@ -301,7 +305,8 @@ const Store = (() => {
   }
   function validateFood(f, bad){
     if (!f || typeof f.name!=='string' || !f.name.trim() || !isNum(f.baseAmount,1e-9,100000) || !isNum(f.kcal,0,100000)) bad('マスタ項目が不正です');
-    return {id:str(f.id,40)||uid(), name:str(f.name,100).trim(), baseAmount:f.baseAmount, unit:str(f.unit,20), kcal:f.kcal, note:str(f.note,500)};
+    const macro = k => f[k]==null?null:(isNum(f[k],0,100000)?f[k]:bad('PFCが不正です'));
+    return {id:str(f.id,40)||uid(), name:str(f.name,100).trim(), baseAmount:f.baseAmount, unit:str(f.unit,20), kcal:f.kcal, protein:macro('protein'), fat:macro('fat'), carbs:macro('carbs'), note:str(f.note,500)};
   }
 
   const validTz = tz => { try { new Intl.DateTimeFormat('en-CA', {timeZone:tz}); return typeof tz==='string' && tz.length<=60; } catch(e){ return false; } };
@@ -767,9 +772,9 @@ const WD = ['日','月','火','水','木','金','土'];
 const dlabel = s => { const d = Calc.parseDate(s); return `${d.getMonth()+1}/${d.getDate()}(${WD[d.getDay()]})`; };
 
 const ui = {tab:'dash', date:Calc.today(), mview:'food', exq:'', exfilter:'all', exform:null, exImport:null, exmap:null, exmapq:'', dview:'chart', aview:'bal', lift:'', rep:{period:'30', detail:true, body:true}, range:7, calMonth:null, calFor:null, mform:null, wform:null, fform:null};
-const newMform = () => ({meal:'breakfast', foodId:'', mode:'amount', amount:'', manualName:'', manualKcal:'', note:'', editId:null});
+const newMform = () => ({meal:'breakfast', foodId:'', mode:'amount', amount:'', manualName:'', manualKcal:'', manualProtein:'', manualFat:'', manualCarbs:'', note:'', editId:null});
 const newWform = () => ({editId:null, title:'', durationMin:'', intensity:'moderate', kcalOverride:'', note:'', exercises:[{name:'',weightKg:'',reps:'',sets:''}], source:'manual', externalId:null, importedAt:null});
-const newFform = () => ({editId:null, name:'', baseAmount:'', unit:'g', kcal:'', note:''});
+const newFform = () => ({editId:null, name:'', baseAmount:'', unit:'g', kcal:'', protein:'', fat:'', carbs:'', note:''});
 ui.mform = newMform(); ui.wform = newWform(); ui.fform = newFform();
 
 let toastT;
@@ -803,9 +808,11 @@ function viewDash(){
       <tr class="sum"><td>1日の推定総消費</td><td class="n">${fmt(b.total)} kcal</td></tr>
     </table>`;
   const cinfo = b.status==='insufficient' ? '' : (b.exerciseUncalculated ? `<div class="note">筋トレの<b>未計算 ${b.exerciseUncalculated}件</b>（運動強度が未設定）。追加消費には算入されていないため、差分は実際より多めに出る可能性があります。「日次記録」で強度を選んでください。</div>` : '') + `<div class="small">計算条件: 体重 ${fmt(cond.weightKg,1)}kg・${esc(Calc.ACTIVITY.find(a=>a.id===cond.activityId).label)}・${locked?'この日に保存済みの条件':'現在の設定（記録すると保存されます）'}</div>`;
+  const p = b.pfc, pfc = p.complete && p.ratio ? `<div class="card"><h2>PFCバランス</h2><div class="big ok">${p.score}<small> / 100</small></div><div class="small">目安 P 25% / F 25% / C 50% との近さ（栄養素のカロリー比）</div><div class="tiles"><div class="tile"><span>P</span><b>${fmt(p.protein,1)}g</b><small>${fmt(p.ratio.protein,0)}%</small></div><div class="tile"><span>F</span><b>${fmt(p.fat,1)}g</b><small>${fmt(p.ratio.fat,0)}%</small></div><div class="tile"><span>C</span><b>${fmt(p.carbs,1)}g</b><small>${fmt(p.ratio.carbs,0)}%</small></div></div><div style="display:flex;height:14px;border-radius:8px;overflow:hidden;background:#e5e7eb"><i style="width:${p.ratio.protein}%;background:#34c759"></i><i style="width:${p.ratio.fat}%;background:#f59e0b"></i><i style="width:${p.ratio.carbs}%;background:#3b82f6"></i></div></div>` : `<div class="card"><h2>PFCバランス</h2><div class="small">P・F・Cがすべて入力された食事を登録すると、栄養素の合計・比率・バランススコアを表示します。過去の食事はPFC未入力のまま保持されます。</div></div>`;
   return `${dateBar()}
     <div class="card"><h2>${esc(d)} の収支</h2>${head}${rows}${cinfo}
       <div class="note">消費カロリーと収支は推定値であり、実測値ではありません。</div></div>
+    ${pfc}
     <div class="card"><h2>推移</h2>
       <div class="seg">${[['chart','グラフ'],['cal','カレンダー']].map(([k,l])=>`<button data-act="dview" data-id="${k}" class="${ui.dview===k?'on':''}">${l}</button>`).join('')}</div>
       ${ui.dview==='cal' ? calendar() : `<h3>直近7日間</h3>${chart()}
@@ -937,7 +944,7 @@ function viewDaily(){
     ${food ? `
       <div class="row"><div><label>入力方法</label><select data-f="mform.mode" data-rerender><option value="amount" ${mf.mode==='amount'?'selected':''}>量（${esc(food.unit)}）</option><option value="ratio" ${mf.mode==='ratio'?'selected':''}>倍率（×基準量）</option></select></div>
       <div><label>${mf.mode==='amount'?'量（'+esc(food.unit)+'）':'倍率（例: 1.5）'}</label><input type="number" inputmode="decimal" step="any" data-f="mform.amount" value="${esc(mf.amount)}" placeholder="${mf.mode==='amount'?fmt(food.baseAmount,2):'1'}"></div></div>`
-    : `<div class="row"><div><label>名前</label><input data-f="mform.manualName" value="${esc(mf.manualName)}" maxlength="100"></div><div><label>カロリー (kcal)</label><input type="number" inputmode="decimal" step="any" data-f="mform.manualKcal" value="${esc(mf.manualKcal)}"></div></div>`}
+    : `<div class="row"><div><label>名前</label><input data-f="mform.manualName" value="${esc(mf.manualName)}" maxlength="100"></div><div><label>カロリー (kcal)</label><input type="number" inputmode="decimal" step="any" data-f="mform.manualKcal" value="${esc(mf.manualKcal)}"></div></div><div class="row"><div><label>P (g)</label><input type="number" inputmode="decimal" step="any" data-f="mform.manualProtein" value="${esc(mf.manualProtein)}"></div><div><label>F (g)</label><input type="number" inputmode="decimal" step="any" data-f="mform.manualFat" value="${esc(mf.manualFat)}"></div><div><label>C (g)</label><input type="number" inputmode="decimal" step="any" data-f="mform.manualCarbs" value="${esc(mf.manualCarbs)}"></div></div>`}
     <label>メモ（任意）</label><input data-f="mform.note" value="${esc(mf.note)}" maxlength="200">
     <div class="small" id="mpreview" style="margin-top:6px"></div>
     <div class="btns"><button class="pri" data-act="meal-save">${mf.editId?'更新':'追加'}</button>${mf.editId?'<button data-act="meal-cancel">キャンセル</button>':''}</div>
@@ -1062,21 +1069,22 @@ function viewFoods(){
     <div class="row"><div><label>基準量</label><input type="number" inputmode="decimal" step="any" data-f="fform.baseAmount" value="${esc(f.baseAmount)}"></div>
     <div><label>単位</label><input data-f="fform.unit" value="${esc(f.unit)}" list="units" maxlength="20"><datalist id="units"><option>g</option><option>個</option><option>杯</option><option>食</option><option>ml</option></datalist></div></div>
     <label>基準量あたりのカロリー (kcal)</label><input type="number" inputmode="decimal" step="any" data-f="fform.kcal" value="${esc(f.kcal)}">
+    <div class="row"><div><label>たんぱく質 P (g)</label><input type="number" inputmode="decimal" step="any" data-f="fform.protein" value="${esc(f.protein)}"></div><div><label>脂質 F (g)</label><input type="number" inputmode="decimal" step="any" data-f="fform.fat" value="${esc(f.fat)}"></div><div><label>炭水化物 C (g)</label><input type="number" inputmode="decimal" step="any" data-f="fform.carbs" value="${esc(f.carbs)}"></div></div>
     <label>メモ（任意）</label><input data-f="fform.note" value="${esc(f.note)}" maxlength="200">
     <div class="note">変更しても、すでに記録済みの食事のカロリーは変わりません（記録時の値を保存しています）。</div>
     <div class="btns"><button class="pri" data-act="food-save">${f.editId?'更新':'追加'}</button>${f.editId?'<button data-act="food-cancel">キャンセル</button>':''}</div></div>
   <div class="card"><h2>登録済み（${foods.length}件）</h2>
-    ${foods.map(x=>`<div class="item"><div><b>${esc(x.name)}</b><br><span class="small">${fmt(x.baseAmount,2)}${esc(x.unit)} = ${fmt(x.kcal)} kcal${x.note?' ・ '+esc(x.note):''}</span></div>
+    ${foods.map(x=>`<div class="item"><div><b>${esc(x.name)}</b><br><span class="small">${fmt(x.baseAmount,2)}${esc(x.unit)} = ${fmt(x.kcal)} kcal ・ P${x.protein==null?'—':fmt(x.protein,1)} F${x.fat==null?'—':fmt(x.fat,1)} C${x.carbs==null?'—':fmt(x.carbs,1)}g${x.note?' ・ '+esc(x.note):''}</span></div>
       <div class="acts"><button class="sm" data-act="food-edit" data-id="${x.id}">編集</button><button class="sm danger" data-act="food-del" data-id="${x.id}">削除</button></div></div>`).join('') || '<div class="small">未登録です</div>'}
     <div class="btns"><button data-act="food-sample">参考サンプルを追加</button><button data-act="food-export">マスタをエクスポート</button><button data-act="food-import">マスタをインポート</button></div>
     <input type="file" id="foodfile" accept="application/json,.json" hidden>
     <div class="small">サンプルは日本食品標準成分表（八訂）等に基づく概算の<b>参考値</b>です。商品・調理法で異なるため、必ず実際の値に編集してください。</div></div>`;
 }
 const SAMPLE_FOODS = [
-  {name:'ごはん（炊飯後）', baseAmount:100, unit:'g', kcal:156, note:'参考値: 精白米めし'},
-  {name:'卵（M・約50g）', baseAmount:1, unit:'個', kcal:71, note:'参考値: 全卵生'},
-  {name:'牛乳', baseAmount:200, unit:'ml', kcal:134, note:'参考値: 普通牛乳'},
-  {name:'鶏むね肉（皮なし・生）', baseAmount:100, unit:'g', kcal:108, note:'参考値'},
+  {name:'ごはん（炊飯後）', baseAmount:100, unit:'g', kcal:156, protein:2.5, fat:0.3, carbs:37.1, note:'参考値: 精白米めし'},
+  {name:'卵（M・約50g）', baseAmount:1, unit:'個', kcal:71, protein:6.2, fat:5.2, carbs:0.2, note:'参考値: 全卵生'},
+  {name:'牛乳', baseAmount:200, unit:'ml', kcal:134, protein:6.8, fat:7.6, carbs:9.8, note:'参考値: 普通牛乳'},
+  {name:'鶏むね肉（皮なし・生）', baseAmount:100, unit:'g', kcal:108, protein:22.3, fat:1.5, carbs:0, note:'参考値'},
   {name:'いつもの朝食', baseAmount:1, unit:'食', kcal:500, note:'仮の値。実際のkcalに編集してください'}
 ];
 
@@ -1592,11 +1600,13 @@ const actions = {
       const old = mf.editId && Store.getDay(d).meals.find(x=>x.id===mf.editId);
       const same = old && old.foodId===food.id;
       const baseAmount = same ? old.baseAmount : food.baseAmount, baseKcal = same ? old.baseKcal : food.kcal;
-      e = {foodId:food.id, name:same?old.name:food.name, unit:same?old.unit:food.unit, amount, baseAmount, baseKcal, kcal:Calc.scaleKcal(baseKcal, baseAmount, amount)};
+      const rate = amount/baseAmount, p=same?old.protein:food.protein, f=same?old.fat:food.fat, c=same?old.carbs:food.carbs;
+      e = {foodId:food.id, name:same?old.name:food.name, unit:same?old.unit:food.unit, amount, baseAmount, baseKcal, kcal:Calc.scaleKcal(baseKcal, baseAmount, amount), protein:p==null?null:p*rate, fat:f==null?null:f*rate, carbs:c==null?null:c*rate};
     } else {
       const name = mf.manualName.trim(); if (!name) throw new Error('名前を入力してください');
       const k = posNum(mf.manualKcal,'カロリー',{max:100000});
-      e = {foodId:null, name, unit:'', amount:1, baseAmount:1, baseKcal:k, kcal:k};
+      const opt = (v,n) => v===''?null:posNum(v,n,{max:100000});
+      e = {foodId:null, name, unit:'', amount:1, baseAmount:1, baseKcal:k, kcal:k, protein:opt(mf.manualProtein,'たんぱく質'), fat:opt(mf.manualFat,'脂質'), carbs:opt(mf.manualCarbs,'炭水化物')};
     }
     e.meal = mf.meal; e.note = mf.note.trim();
     Store.lockCond(d); const day = Store.mutDay(d);
@@ -1711,13 +1721,14 @@ const actions = {
   'refresh-cond'(){ if(!confirm('この日の計算条件（体重・身長・活動レベル・許容幅）を現在の設定で更新します。よろしいですか？')) return; Store.refreshCond(ui.date); persist(); toast('更新しました'); },
   'food-save'(){
     const f = ui.fform;
-    const item = Store.validateFood({id:f.editId||Store.uid(), name:f.name, baseAmount:posNum(f.baseAmount,'基準量',{gt0:true,max:100000}), unit:f.unit.trim(), kcal:posNum(f.kcal,'カロリー',{max:100000}), note:f.note.trim()}, m=>{throw new Error(m);});
+    const opt = (v,n) => v===''?null:posNum(v,n,{max:100000});
+    const item = Store.validateFood({id:f.editId||Store.uid(), name:f.name, baseAmount:posNum(f.baseAmount,'基準量',{gt0:true,max:100000}), unit:f.unit.trim(), kcal:posNum(f.kcal,'カロリー',{max:100000}), protein:opt(f.protein,'たんぱく質'), fat:opt(f.fat,'脂質'), carbs:opt(f.carbs,'炭水化物'), note:f.note.trim()}, m=>{throw new Error(m);});
     if (!item.name) throw new Error('名前を入力してください');
     const foods = Store.data.foods;
     if (f.editId) foods[foods.findIndex(x=>x.id===f.editId)] = item; else foods.push(item);
     ui.fform = newFform(); persist(); toast('保存しました');
   },
-  'food-edit'(el){ const x = Store.data.foods.find(f=>f.id===el.dataset.id); ui.fform = {editId:x.id, name:x.name, baseAmount:x.baseAmount, unit:x.unit, kcal:x.kcal, note:x.note}; scrollTo(0,0); },
+  'food-edit'(el){ const x = Store.data.foods.find(f=>f.id===el.dataset.id); ui.fform = {editId:x.id, name:x.name, baseAmount:x.baseAmount, unit:x.unit, kcal:x.kcal, protein:x.protein??'', fat:x.fat??'', carbs:x.carbs??'', note:x.note}; scrollTo(0,0); },
   'food-del'(el){ if(!confirm('このマスタを削除しますか？（過去の食事記録は変わりません）')) return; Store.data.foods = Store.data.foods.filter(f=>f.id!==el.dataset.id); persist(); },
   'food-cancel'(){ ui.fform = newFform(); },
   mview(el){ ui.mview = el.dataset.id; },
