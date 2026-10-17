@@ -885,7 +885,7 @@ function stats(bs){
   return `<div class="stats"><div><span>平均差分（完了日）</span><b>${avg==null?'—':sgn(avg)}</b></div><div><span>オーバー</span><b>${cnt('over')}日</b></div><div><span>維持</span><b>${cnt('maintain')}日</b></div><div><span>アンダー</span><b>${cnt('under')}日</b></div></div>`;
 }
 function chart(){
-  const n = ui.range, days = []; for (let i=n-1;i>=0;i--) days.push(Calc.addDays(ui.date,-i));
+  const n = ui.range, today = Calc.today(), days = []; for (let i=n-1;i>=0;i--) days.push(Calc.addDays(today,-i));
   const bs = days.map(balanceOf);
   const max = Math.max(300, ...bs.map(b=>b.diff==null?0:Math.abs(b.diff)));
   return stats(bs) + '<div class="chart">' + bs.map((b,i) => {
@@ -895,21 +895,22 @@ function chart(){
       bar = `<div class="bar ${cls}" style="${up?'bottom':'top'}:50%;height:${h}%;${b.status==='provisional'?'color:'+(up?'var(--over)':'var(--under)'):''}"></div>`;
     }
     txt = b.diff==null || b.status==='unrecorded' ? '—' : sgn(b.diff);
-    return `<button class="col ${days[i]===ui.date?'sel':''}" data-act="pick" data-id="${days[i]}"><div class="bars">${bar}</div><b class="${st.c}">${txt}</b><span class="${st.c}">${LBL(b.status)}</span><span class="dt">${dshort(days[i])}</span></button>`;
+    return `<button class="col ${days[i]===today?'sel':''}" data-act="pick" data-id="${days[i]}"><div class="bars">${bar}</div><b class="${st.c}">${txt}</b><span class="${st.c}">${LBL(b.status)}</span><span class="dt">${dshort(days[i])}</span></button>`;
   }).join('') + '</div>';
 }
 function calendar(){
-  if (ui.calFor !== ui.date) { ui.calMonth = ui.date.slice(0,7); ui.calFor = ui.date; }
+  const today = Calc.today();
+  if (!ui.calMonth) ui.calMonth = today.slice(0,7);
   const [y, m] = ui.calMonth.split('-').map(Number), lead = new Date(y, m-1, 1).getDay(), last = new Date(y, m, 0).getDate();
   const cells = Array(lead).fill('<div class="cc empty"></div>'), bs = [];
   for (let i=1;i<=last;i++) {
     const d = `${y}-${String(m).padStart(2,'0')}-${String(i).padStart(2,'0')}`, b = balanceOf(d); bs.push(b);
     const st = STATUS[b.status], txt = b.diff==null || b.status==='unrecorded' ? '—' : sgn(b.diff);
-    cells.push(`<button class="cc bg-${st.c} ${d===ui.date?'sel':''} ${d===Calc.today()?'tod':''}" data-act="pick" data-id="${d}"><i>${i}</i><b class="${st.c}">${txt}</b><span class="${st.c}">${LBL(b.status)}</span></button>`);
+    cells.push(`<button class="cc bg-${st.c} ${d===today?'sel tod':''}" data-act="pick" data-id="${d}"><i>${i}</i><b class="${st.c}">${txt}</b><span class="${st.c}">${LBL(b.status)}</span></button>`);
   }
   return `<div class="calnav"><button data-act="cal-prev" aria-label="前月">◀</button><b>${y}年${m}月</b><button data-act="cal-next" aria-label="翌月">▶</button></div>
     ${stats(bs)}<div class="cal">${WD.map(w=>`<div class="wd">${w}</div>`).join('')}${cells.join('')}</div>
-    <div class="small">各日の数字は差分(kcal)。タップでその日を選択します。縦線なしの枠=今日、太枠=選択中。</div>`;
+    <div class="small">各日の数字は差分(kcal)。タップでその日を日別表示に選択できます。推移の基準と太枠は常に今日です。</div>`;
 }
 function dateBar(){
   return `<div class="datebar"><button data-act="date-prev" aria-label="前日">◀</button><input type="date" data-f="date" value="${esc(ui.date)}"><button data-act="date-next" aria-label="翌日">▶</button><button data-act="today">今日</button></div>`;
