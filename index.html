@@ -1600,8 +1600,10 @@ const actions = {
       const old = mf.editId && Store.getDay(d).meals.find(x=>x.id===mf.editId);
       const same = old && old.foodId===food.id;
       const baseAmount = same ? old.baseAmount : food.baseAmount, baseKcal = same ? old.baseKcal : food.kcal;
-      const rate = amount/baseAmount, p=same?old.protein:food.protein, f=same?old.fat:food.fat, c=same?old.carbs:food.carbs;
-      e = {foodId:food.id, name:same?old.name:food.name, unit:same?old.unit:food.unit, amount, baseAmount, baseKcal, kcal:Calc.scaleKcal(baseKcal, baseAmount, amount), protein:p==null?null:p*rate, fat:f==null?null:f*rate, carbs:c==null?null:c*rate};
+      // 記録済みのPFCはスナップショットとして保つ。PFC導入前の旧記録だけは、
+      // 同じマスタを再保存した時点で現在のマスタ値から補完する。
+      const macro = (oldValue, masterValue) => same && oldValue!=null ? oldValue*amount/old.amount : (masterValue==null ? null : masterValue*amount/baseAmount);
+      e = {foodId:food.id, name:same?old.name:food.name, unit:same?old.unit:food.unit, amount, baseAmount, baseKcal, kcal:Calc.scaleKcal(baseKcal, baseAmount, amount), protein:macro(old&&old.protein,food.protein), fat:macro(old&&old.fat,food.fat), carbs:macro(old&&old.carbs,food.carbs)};
     } else {
       const name = mf.manualName.trim(); if (!name) throw new Error('名前を入力してください');
       const k = posNum(mf.manualKcal,'カロリー',{max:100000});
