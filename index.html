@@ -1162,6 +1162,7 @@ function buildReport(){
   const j = rows.filter(r=>['over','under','maintain'].includes(r.b.status)), n = j.length;
   const avg = f => n ? j.reduce((s,r)=>s+f(r),0)/n : null;
   const cnt = s => rows.filter(r=>r.b.status===s).length;
+  const kv = (k,v) => `<div>${esc(k)}</div><div><b>${esc(v)}</b></div>`;
   const sessions = rows.reduce((s,r)=>s+r.day.workouts.length,0), mins = rows.reduce((s,r)=>s+r.day.workouts.reduce((a,w)=>a+w.durationMin,0),0);
   const wk = rows.reduce((s,r)=>s+(r.b.exercise||0),0);
   const pfcMealDays = rows.filter(r=>r.day.meals.length).length;
@@ -1173,7 +1174,6 @@ function buildReport(){
   const pfcSummary = pfcScore==null ? `<h2>PFC集計</h2><div class="small">P・F・Cがすべて入力された食事日がないため、PFCは未計算です。0gとしては扱いません。</div>` : `<h2>PFC集計</h2><div class="kv">${kv('PFC入力完了日', `${pfcRows.length} / ${pfcMealDays}日`)}${kv('バランススコア', `${pfcScore} / 100`)}${kv('たんぱく質 (P)', `${fmt(pfcTotal.protein,1)} g / ${fmt(pfcRatio.protein,0)}%`)}${kv('脂質 (F)', `${fmt(pfcTotal.fat,1)} g / ${fmt(pfcRatio.fat,0)}%`)}${kv('炭水化物 (C)', `${fmt(pfcTotal.carbs,1)} g / ${fmt(pfcRatio.carbs,0)}%`)}</div><div class="small">期間中にP・F・Cがすべて入力された日の合計です。比率は栄養素由来カロリー比（P 4kcal/g・F 9kcal/g・C 4kcal/g）、スコアの目安は P 25% / F 25% / C 50% です。</div>`;
   const ws = Object.keys(Store.data.weights).filter(d=>d>=from&&d<=to).sort();
   const last = Store.condFor(to).cond, act = Calc.ACTIVITY.find(a=>a.id===last.activityId);
-  const kv = (k,v) => `<div>${esc(k)}</div><div><b>${esc(v)}</b></div>`;
   const STX = {over:'オーバー',under:'アンダー',maintain:'ほぼ維持',provisional:'暫定',unrecorded:'未記録',insufficient:'情報不足'};
   let h = `<div class="rbar"><button class="pri" data-act="rep-print">PDF保存・印刷</button><button data-act="rep-close">閉じる</button></div>
     <h1>カロリー収支サマリー</h1><div class="small">期間: ${from} ～ ${to}（${dates.length}日）・作成日: ${Calc.today()}</div>
