@@ -1164,6 +1164,13 @@ function buildReport(){
   const cnt = s => rows.filter(r=>r.b.status===s).length;
   const sessions = rows.reduce((s,r)=>s+r.day.workouts.length,0), mins = rows.reduce((s,r)=>s+r.day.workouts.reduce((a,w)=>a+w.durationMin,0),0);
   const wk = rows.reduce((s,r)=>s+(r.b.exercise||0),0);
+  const pfcMealDays = rows.filter(r=>r.day.meals.length).length;
+  const pfcRows = rows.filter(r=>r.b.pfc.complete && r.b.pfc.ratio);
+  const pfcTotal = pfcRows.reduce((a,r)=>({protein:a.protein+r.b.pfc.protein, fat:a.fat+r.b.pfc.fat, carbs:a.carbs+r.b.pfc.carbs}), {protein:0,fat:0,carbs:0});
+  const pfcKcal = pfcTotal.protein*4+pfcTotal.fat*9+pfcTotal.carbs*4;
+  const pfcRatio = pfcKcal ? {protein:pfcTotal.protein*4/pfcKcal*100, fat:pfcTotal.fat*9/pfcKcal*100, carbs:pfcTotal.carbs*4/pfcKcal*100} : null;
+  const pfcScore = pfcRatio ? Math.max(0, Math.round(100-(Math.abs(pfcRatio.protein-25)+Math.abs(pfcRatio.fat-25)+Math.abs(pfcRatio.carbs-50)))) : null;
+  const pfcSummary = pfcScore==null ? `<h2>PFC集計</h2><div class="small">P・F・Cがすべて入力された食事日がないため、PFCは未計算です。0gとしては扱いません。</div>` : `<h2>PFC集計</h2><div class="kv">${kv('PFC入力完了日', `${pfcRows.length} / ${pfcMealDays}日`)}${kv('バランススコア', `${pfcScore} / 100`)}${kv('たんぱく質 (P)', `${fmt(pfcTotal.protein,1)} g / ${fmt(pfcRatio.protein,0)}%`)}${kv('脂質 (F)', `${fmt(pfcTotal.fat,1)} g / ${fmt(pfcRatio.fat,0)}%`)}${kv('炭水化物 (C)', `${fmt(pfcTotal.carbs,1)} g / ${fmt(pfcRatio.carbs,0)}%`)}</div><div class="small">期間中にP・F・Cがすべて入力された日の合計です。比率は栄養素由来カロリー比（P 4kcal/g・F 9kcal/g・C 4kcal/g）、スコアの目安は P 25% / F 25% / C 50% です。</div>`;
   const ws = Object.keys(Store.data.weights).filter(d=>d>=from&&d<=to).sort();
   const last = Store.condFor(to).cond, act = Calc.ACTIVITY.find(a=>a.id===last.activityId);
   const kv = (k,v) => `<div>${esc(k)}</div><div><b>${esc(v)}</b></div>`;
@@ -1177,6 +1184,7 @@ function buildReport(){
     ${kv('暫定の日 / 記録なしの日', `${cnt('provisional')} / ${empty}日`)}${kv('情報不足の日', cnt('insufficient')+'日')}
     ${kv('筋トレ', `${sessions}回 / ${fmt(mins)}分 / 追加消費合計 ${fmt(wk)} kcal`)}
     ${rep.body && ws.length ? kv('体重（期間内の記録）', `${fmt(Store.data.weights[ws[0]],1)} kg (${ws[0]}) → ${fmt(Store.data.weights[ws[ws.length-1]],1)} kg (${ws[ws.length-1]})`) : ''}</div>
+    ${pfcSummary}
     <h2>計算条件</h2><div class="kv">${rep.body && last.heightCm ? kv('身長 / 性別 / 年齢', `${fmt(last.heightCm,1)}cm / ${last.sex==='male'?'男性':last.sex==='female'?'女性':'—'} / ${last.birthDate?Calc.ageOn(last.birthDate,to)+'歳':'—'}`) : ''}
     ${kv('日常活動レベル', act?`${act.label}（×${act.pal}、筋トレを含まない）`:'未設定')}${kv('「ほぼ維持」の許容幅', '±'+fmt(last.tol)+' kcal')}
     ${kv('基礎代謝', 'Mifflin-St Jeor式')}${kv('筋トレ消費', '(MET−1)×体重×時間（Compendium 2024）、手入力あれば優先')}</div>
